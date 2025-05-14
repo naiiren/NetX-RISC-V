@@ -1,0 +1,7 @@
+[project]
+name = "rv32i"
+version = "0.1.0"
+include = [ "rv32i.nx" ]
+
+[dependencies]
+std = { version = "0.1.0", git = "git@github.com:pascal-lab/NetX_std.git", commit="46ee0df" }
