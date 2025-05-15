@@ -22,8 +22,9 @@ component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dm
 
     auto [Ra, Rb] <> RegFile(width=32, capacity=5, isPosEdge=false, isHighRst=true) <> {
         clk : clk, rst : rst, 
-        wr_en : regWr, wr_addr : rd, 
+        wr_addr : rd, 
         rd_addr_a : rs1, rd_addr_b : rs2, 
+        wr_en : AND <> [regWr, NOT <> EQ <> [rd, 5'b0]], 
         din : MUX(1) <> [memToReg, result, dmemDataOut]
     };
 

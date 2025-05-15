@@ -4,8 +4,6 @@
 #include <nxsim/circuit.h>
 #include <nxsim/circuit_parser.h>
 
-// #define DEBUG
-
 using namespace nxon;
 
 const static auto magic_instr = value_t{32, 0xdead10cc};
@@ -14,7 +12,7 @@ auto high = value_t{1, 1};
 auto low = value_t{1, 0};
 
 unsigned singed_extend(const unsigned size, const unsigned value) {
-    if (value & 1 << size) {
+    if (value & 1 << size - 1) {
         return value | ~((1 << size) - 1);
     }
     return value;
@@ -35,10 +33,10 @@ class Memory {
         return result;
     }
 
-    void write_word(unsigned addr, unsigned value) {
+    void write_bytes(unsigned addr, unsigned value, const unsigned offset) {
         addr &= MEMORY_SIZE - 1;
-        for (int i = 0; i != 4; ++i) {
-            memory[addr + 3 - i] = static_cast<std::byte>(value & 0xFF);
+        for (int i = 0; i != offset; ++i) {
+            memory[addr + i] = static_cast<std::byte>(value & 0xFF);
             value >>= 8;
         }
     }
@@ -52,7 +50,7 @@ public:
         while (std::getline(fin, line)) {
             if (line.empty()) continue;
             if (line[0] == '@') {
-                addr = std::stoul(line.substr(1));
+                addr = std::stoul(line.substr(1), nullptr, 16) << 2;
             } else {
                 unsigned value = std::stoul(line, nullptr, 16);
                 for (int i = 0; i < 4; ++i) {
@@ -91,11 +89,11 @@ public:
 
     void write_with_op(const value_t &memOP, const unsigned addr, const value_t &value) {
         switch (static_cast<unsigned>(memOP)) {
-            case 0b000u : write_word(addr, singed_extend(8, static_cast<unsigned>(value) & 0xFF)); break;
-            case 0b001u : write_word(addr, singed_extend(16, static_cast<unsigned>(value) & 0xFFFF)); break;
-            case 0b010u : write_word(addr, static_cast<unsigned>(value)); break;
-            case 0b101u : write_word(addr, static_cast<unsigned>(value) & 0xFFFF); break;
-            case 0b100u : write_word(addr, static_cast<unsigned>(value) & 0xFF); break;
+            case 0b000u : write_bytes(addr, static_cast<unsigned>(value) & 0xFFu, 1); break;
+            case 0b001u : write_bytes(addr, static_cast<unsigned>(value) & 0xFFFFu, 2); break;
+            case 0b010u : write_bytes(addr, static_cast<unsigned>(value), 4); break;
+            case 0b101u : write_bytes(addr, static_cast<unsigned>(value) & 0xFFFFu, 2); break;
+            case 0b100u : write_bytes(addr, static_cast<unsigned>(value) & 0xFFu, 1); break;
             default : {
                 std::cout << "Invalid write memory operation: " << static_cast<unsigned>(memOP) << std::endl;
                 std::abort();
@@ -122,12 +120,6 @@ int main() {
         const auto& entry : std::filesystem::directory_iterator(path)) {
         std::filesystem::path file_path = entry.path();
 
-#ifdef DEBUG
-        if (file_path.filename() != "blt.hex") {
-            continue;
-        }
-#endif
-
         if (file_path.extension() == ".data") {
             continue;
         }
@@ -139,9 +131,6 @@ int main() {
         total++;
         std::cout << "Running test case: " << file_path.filename();
 
-#ifdef DEBUG
-        std::cout << std::endl;
-#endif
         const auto instr_mem = new Memory(std::ifstream(file_path));
         const auto data_mem = new Memory(std::ifstream(file_path.replace_extension(".data")));
 
@@ -163,13 +152,6 @@ int main() {
                 auto d_mem_in = ctx.get_by_name("dmemDataIn");
                 data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
             }
-
-            // print("instr: ", instr);
-            // for (int j = 1; j < 4; ++j) {
-            //     print(std::format("x{}: ", j), ctx.get_by_name(std::format("data[{}]", j)));
-            // }
-            // print("a0: ", ctx.get_by_name(std::format("data[10]")));
-            // std::cout << std::endl;
 
             if (instr == magic_instr) {
                 if (static_cast<unsigned>(ctx.get_by_name("data[10]")) == 0x00c0ffee) {
