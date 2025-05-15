@@ -20,14 +20,14 @@ component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dm
     auto [extOP, regWr, branch_ctl, memToReg, dmemWe, dmemOp, aSrc, bSrc, ctl] <> InstrDecoder <> [op, func3, func7[5]];
     auto imm <> ImmSelector <> [extOP, instr];
 
-    auto [Ra, Rb] <> RegFile(width=32, capacity=5, isPosEdge=true, isHighRst=true) <> {
+    auto [Ra, Rb] <> RegFile(width=32, capacity=5, isPosEdge=false, isHighRst=true) <> {
         clk : clk, rst : rst, 
-        wr_en : 1'b1, wr_addr : rd, 
+        wr_en : regWr, wr_addr : rd, 
         rd_addr_a : rs1, rd_addr_b : rs2, 
-        din : MUX(1) <> [memToReg, imm, dmemDataOut]
+        din : MUX(1) <> [memToReg, result, dmemDataOut]
     };
 
-    auto [dmemAddr, zero, less] <> ALU <> [
+    auto [result, zero, less] <> ALU <> [
         MUX(1) <> [aSrc, Ra, PC],
         MUX(2) <> [bSrc, Rb, imm, 4, 4], ctl
     ];
@@ -39,9 +39,10 @@ component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dm
         MUX(1) <> [PCBsrc, PC, Ra]
     ];
 
-    PC <> REGISTER(false) <> [MUX(1) <> [rst, nextPC, 32'b0], clk];
+    PC <> REGISTER(isPosEdge=false) <> [MUX(1) <> [rst, nextPC, 32'b0], clk];
 
     imemAddr <> MUX(1) <> [rst, nextPC, 32'b0];
+    dmemAddr <> result;
     dmemDataIn <> Rb;
 }
 
@@ -75,16 +76,17 @@ component InstrDecoder : [op_i, func3, func7] -> [extOP, regWr, branch_ctl, memT
     
     auto regWr <> OR(4) <> [U_flag, I_flag, R_flag, J_flag];
 
+    auto de_func3 <> DECODER(3) <> func3;
     auto branch_ctl <> OR(3) <> [
         branch(J_flag,   3'b001),
         branch(I_flag_1, 3'b010),
         branch(B_flag, OR(6) <> [
-                branch(EQ <> [func3, 3'b000], 3'b100), // beq
-                branch(EQ <> [func3, 3'b001], 3'b101), // bne
-                branch(EQ <> [func3, 3'b100], 3'b110), // blt
-                branch(EQ <> [func3, 3'b101], 3'b111), // bge
-                branch(EQ <> [func3, 3'b110], 3'b110), // bltu
-                branch(EQ <> [func3, 3'b111], 3'b111)  // bgeu
+                branch(de_func3[3'b000], 3'b100), // beq
+                branch(de_func3[3'b001], 3'b101), // bne
+                branch(de_func3[3'b100], 3'b110), // blt
+                branch(de_func3[3'b101], 3'b111), // bge
+                branch(de_func3[3'b110], 3'b110), // bltu
+                branch(de_func3[3'b111], 3'b111)  // bgeu
             ]
         )
     ];
@@ -98,11 +100,8 @@ component InstrDecoder : [op_i, func3, func7] -> [extOP, regWr, branch_ctl, memT
         branch(OR <> [R_flag, B_flag], 2'b00)
     ];
 
-    wire de_func3 of bit(8);
-    wire arith_ctl of bit(4);
-    auto de_func3 <> DECODER(3) <> func3;
     auto arith_ctl <> OR(8) <> [
-        branch(de_func3[3'b000], CONCAT <> [func7, 3'b000]),
+        branch(de_func3[3'b000], CONCAT <> [AND <> [func7, R_flag], 3'b000]),
         branch(de_func3[3'b001], 4'b0001),
         branch(de_func3[3'b010], 4'b0010),
         branch(de_func3[3'b011], 4'b1010),
@@ -124,15 +123,15 @@ component ImmSelector: [extOP, instr] -> [imm] {
     wire instr of bit(32);
     wire imm   of bit(32);
 
-    auto immI <> CONCAT <> [CAST(20) <> instr[31], instr[31:20]];
+    auto immI <> CAST(32) <> instr[31:20];
     auto immU <> CONCAT <> [instr[31:12], 12'b0];
-    auto immS <> CONCAT(3) <> [CAST(20) <> instr[31], instr[31:25], instr[11:7]];
-    auto immB <> CONCAT(5) <> [CAST(20) <> instr[31], instr[7], instr[30:25], instr[11:8], 1'b0];
-    auto immJ <> CONCAT(5) <> [CAST(12) <> instr[31], instr[19:12], instr[20], instr[30:21], 1'b0];
+    auto immS <> CAST(32) <> CONCAT <> [instr[31:25], instr[11:7]];
+    auto immB <> CAST(32) <> CONCAT <> [instr[31], instr[7], instr[30:25], instr[11:8], 1'b0];
+    auto immJ <> CAST(32) <> CONCAT <> [instr[31], instr[19:12], instr[20], instr[30:21], 1'b0];
 
     wire mask of bit(8);
     mask <> DECODER(3) <> extOP;
-    let branch(i, pred) = MUX(1) <> [mask[i]#, CAST <> 1'b0, pred];
+    let branch(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
     imm <> OR(5) <> [
         branch(3'b000, immI), branch(3'b001, immU), 
         branch(3'b010, immS), branch(3'b011, immB), branch(3'b100, immJ)
@@ -147,20 +146,23 @@ component ALU: [a, b, ctl] -> [result, zero, less] {
 
     wire mask       of bit(8);
     mask <> DECODER(3) <> ctl[2:0];
-    let firBranch(i, pred) = MUX(1) <> [mask[i]#, CAST <> 1'b0, pred];
-    let secBranch(i, b0, b1) = firBranch(i, MUX(1) <> [ctl[3]#, b0, b1]);
+    let branch(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
+    let sign_branch(b0, b1) = MUX(1) <> [ctl[3], b0, b1];
     result <> OR(8) <> [
-        secBranch(3'b000, ADD <> [a, b], SUB <> [a, b]),
-        firBranch(3'b001, SHL <> [a, b[4:0]]),
-        CAST <> secBranch(3'b010, SLT <> [a, b], ULT <> [a, b]),
-        firBranch(3'b011, b),
-        firBranch(3'b100, XOR <> [a, b]),
-        secBranch(3'b101, LSHR <> [a, b[4:0]], ASHR <> [a, b[4:0]]),
-        firBranch(3'b110, OR <> [a, b]),
-        firBranch(3'b111, AND <> [a, b])
+        branch(3'b000, sign_branch(ADD <> [a, b], SUB <> [a, b])),
+        branch(3'b001, SHL <> [a, b[4:0]]),
+        branch(3'b010, CONCAT <> [31'b0, sign_branch(SLT <> [a, b], ULT <> [a, b])]),
+        branch(3'b011, b),
+        branch(3'b100, XOR <> [a, b]),
+        branch(3'b101, sign_branch(LSHR <> [a, b[4:0]], ASHR <> [a, b[4:0]])),
+        branch(3'b110, OR <> [a, b]),
+        branch(3'b111, AND <> [a, b])
     ];
 
-    zero <> NOT <> OR(32) <> [result[i] | i in [0..32]];
+    zero <> MUX(1) <> [mask[3'b010],
+        NOT <> OR(32) <> [result[i] | i in [0..32]],
+        EQ <> [a, b]
+    ];
     less <> result[0];
 }
 
@@ -169,11 +171,9 @@ component BranchCond : [branch_ctl, zero, less] -> [PCAsrc, PCBsrc] {
     wire zero, less     of bit(1);
     wire PCAsrc, PCBsrc of bit(1);
 
-    wire result of bit(2);
-    wire mask   of bit(8);
-    mask <> DECODER(3) <> branch_ctl;
-    let branch(i, pred) = MUX(1) <> [mask[i]#, CAST <> 1'b0, pred];
-    result <> OR(7) <> [
+    auto mask <> DECODER(3) <> branch_ctl;
+    let branch(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
+    auto result <> OR(7) <> [
         branch(3'b000, 2'b00),
         branch(3'b001, 2'b10),
         branch(3'b010, 2'b11),
