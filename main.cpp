@@ -115,6 +115,9 @@ int main() {
     std::getline(std::cin, json);
     auto ctx = parse_circuit(nlohmann::json::parse(json));
 
+    using namespace std::chrono;
+    const auto start = high_resolution_clock::now();
+
     int passed = 0, total = 0;
     for (std::filesystem::path path = std::filesystem::current_path().append("testcases");
         const auto& entry : std::filesystem::directory_iterator(path)) {
@@ -170,5 +173,9 @@ int main() {
         delete data_mem;
     }
     std::cout << std::format("Passed {}/{} test cases\n", passed, total);
+
+    const auto end = high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end - start;
+    std::cout << "Elapsed time: " << elapsed_seconds.count() << "s\n";
     return 0;
 }
