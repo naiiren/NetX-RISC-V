@@ -1,7 +1,7 @@
 application rv32i;
 
 import std.selector.*;
-import std.memory.RegFile;
+import std.memory.REG_FILE;
 
 component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dmemDataIn, dmemOp, dmemWe] {
     wire clk of clock();
@@ -20,7 +20,7 @@ component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dm
     auto [extOP, regWr, branch_ctl, memToReg, dmemWe, dmemOp, aSrc, bSrc, ctl] <> InstrDecoder <> [op, func3, func7[5]];
     auto imm <> ImmSelector <> [extOP, instr];
 
-    auto [Ra, Rb] <> RegFile(width=32, capacity=5, isPosEdge=false, isHighRst=true) <> {
+    auto [Ra, Rb] <> REG_FILE(width=32, capacity=5, pos_edge=false, high_rst=true) <> {
         clk : clk, rst : rst, 
         wr_addr : rd, 
         rd_addr_a : rs1, rd_addr_b : rs2, 
@@ -40,7 +40,7 @@ component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dm
         MUX(1) <> [PCBsrc, PC, Ra]
     ];
 
-    PC <> REGISTER(isPosEdge=false) <> [MUX(1) <> [rst, nextPC, 32'b0], clk];
+    PC <> REGISTER(pos_edge=false) <> [MUX(1) <> [rst, nextPC, 32'b0], clk];
 
     imemAddr <> MUX(1) <> [rst, nextPC, 32'b0];
     dmemAddr <> result;

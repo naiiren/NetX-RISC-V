@@ -9,7 +9,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(TARGET): main.cpp | $(BUILD_DIR)
-	g++ -O3 -Ofast -std=c++20 -o $@ $< -lnxsim
+	c++ -O3 -ffast-math -std=c++23 -stdlib=libc++ -o $@ $< -lnxsim
 
 run: all
 	nx compile _netx.toml --top core --minimal | $(TARGET)

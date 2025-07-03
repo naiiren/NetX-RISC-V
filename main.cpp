@@ -12,7 +12,7 @@ auto high = value_t{1, 1};
 auto low = value_t{1, 0};
 
 unsigned singed_extend(const unsigned size, const unsigned value) {
-    if (value & 1 << size - 1) {
+    if (value & 1 << (size - 1)) {
         return value | ~((1 << size) - 1);
     }
     return value;
