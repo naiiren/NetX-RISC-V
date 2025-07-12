@@ -1,56 +1,85 @@
 application rv32i;
 
 import std.selector.*;
+import std.utils.REG;
 import std.memory.REG_FILE;
 
-component core : [clk, rst, imemDataOut, dmemDataOut] -> [imemAddr, dmemAddr, dmemDataIn, dmemOp, dmemWe] {
+component CORE : [clk, rst, instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr] {
     wire clk of clock();
     wire rst of bit(1);
-    wire imemDataOut, dmemDataOut, dmemDataIn of bit(32);
-    wire PC, nextPC, imemAddr, dmemAddr of bit(32);
+    wire instr of bit(32);
 
-    auto instr <> imemDataOut;
-    auto func7 <> instr[31:25];
-    auto rs2   <> instr[24:20];
-    auto rs1   <> instr[19:15];
-    auto func3 <> instr[14:12];
-    auto rd    <> instr[11:7];
-    auto op    <> instr[6:0];
-
-    auto [extOP, regWr, branch_ctl, memToReg, dmemWe, dmemOp, aSrc, bSrc, ctl] <> InstrDecoder <> [op, func3, func7[5]];
-    auto imm <> ImmSelector <> [extOP, instr];
-
-    auto [Ra, Rb] <> REG_FILE(width=32, capacity=5, pos_edge=false, high_rst=true) <> {
-        clk : clk, rst : rst, 
-        wr_addr : rd, 
-        rd_addr_a : rs1, rd_addr_b : rs2, 
-        wr_en : AND <> [regWr, NOT <> EQ <> [rd, 5'b0]], 
-        din : MUX(1) <> [memToReg, result, dmemDataOut]
-    };
-
-    auto [result, zero, less] <> ALU <> [
-        MUX(1) <> [aSrc, Ra, PC],
-        MUX(2) <> [bSrc, Rb, imm, 4, 4], ctl
+    // Instruction fields
+    auto [func7, rs2, rs1, func3, rd, op] <> [
+        instr[31:25], instr[24:20], instr[19:15], instr[14:12], instr[11:7], instr[6:0]
     ];
 
-    auto [PCAsrc, PCBsrc] <> BranchCond <> [branch_ctl, zero, less];
+    // Control signals
+    bundle ctl of CTL_SIGNAL_SET;
+    ctl <> INSTR_DECODER <> [op, func3, func7[5]];
+    auto imm <> IMM_SELECTOR <> [ctl.ext_op, instr];
 
-    nextPC <> ADD <> [
+    // Register file
+    auto [Ra, Rb] <> REG_FILE (
+        width=32,           // Each register is 32 bits wide
+        capacity=5,         // There are 2**5 = 32 registers in total
+        pos_edge=false,     // The registers are updated on the falling edge of the clock
+        high_rst=true       // The registers are reset when rst is high
+    ) <> {
+        clk       : clk,
+        rst       : rst,
+        rd_addr_a : rs1,
+        rd_addr_b : rs2,
+        wr_addr   : rd,
+        wr_en     : AND <> [
+                        ctl.reg_wr,
+                        OR <> [rd[i] | i in [0..5]] // Avoid writing to x0
+                    ],
+        din       : MUX(1) <> [ctl.mem_to_reg, result, dmem_out]
+    };
+
+    // Arithmetic Logic Unit (ALU)
+    auto [result, zero, less] <> ALU <> [
+        MUX(1) <> [ctl.a_src, Ra, PC],
+        MUX(2) <> [ctl.b_src, Rb, imm, 4, 4], ctl.alu_ctl
+    ];
+
+    // Branch conditions
+    auto [PCAsrc, PCBsrc] <> BRANCH_COND <> [ctl.branch, zero, less];
+
+    // Program Counter (PC)
+    auto nextPC <> ADD <> [
         MUX(1) <> [PCAsrc, 4, imm],
         MUX(1) <> [PCBsrc, PC, Ra]
     ];
+    auto PC <> REG (
+        pos_edge=false, high_rst=true, rst_value=0
+    ) <> [clk, rst, nextPC];
 
-    PC <> REGISTER(pos_edge=false) <> [MUX(1) <> [rst, nextPC, 32'b0], clk];
+    // Instruction memory operations
+    auto imem_addr <> MUX(1) <> [rst, nextPC, 32'b0];
 
-    imemAddr <> MUX(1) <> [rst, nextPC, 32'b0];
-    dmemAddr <> result;
-    dmemDataIn <> Rb;
+    // Data memory operations
+    auto [dmem_addr, dmem_in, dmem_op, dmem_wr] <> [result, Rb, ctl.mem_op, ctl.mem_wr];
 }
 
-component InstrDecoder : [op_i, func3, func7] -> [extOP, regWr, branch_ctl, memToReg, memWr, memOP, aSrc, bSrc, ctl] {
+interface CTL_SIGNAL_SET : [ext_op, reg_wr, branch, mem_to_reg, mem_wr, mem_op, a_src, b_src, alu_ctl] {
+    wire ext_op     of bit(3);  // Extension operation type
+    wire reg_wr     of bit(1);  // Indicates if the register file should be written to
+    wire branch     of bit(3);  // Branch operation type
+    wire mem_to_reg of bit(1);  // Indicates if the memory value should be written to the register file
+    wire mem_wr     of bit(1);  // Indicates if the memory should be written to
+    wire mem_op     of bit(3);  // Memory operation type
+    wire a_src      of bit(1);  // The source of the first operand for the ALU
+    wire b_src      of bit(2);  // The source of the second operand for the ALU
+    wire alu_ctl    of bit(4);  // The ALU control signal that determines the operation to be performed
+}
+
+component INSTR_DECODER : [op_i, func3, func7] -> [ctl] {
     wire op_i  of bit(7);
     wire func3 of bit(3);
     wire func7 of bit(1);
+    bundle ctl of CTL_SIGNAL_SET;
 
     auto op <> op_i[6:2];
     auto U_flag_0 <> EQ <> [op, 5'b01101]; // lui
@@ -66,61 +95,65 @@ component InstrDecoder : [op_i, func3, func7] -> [extOP, regWr, branch_ctl, memT
     auto U_flag <> OR <> [U_flag_0, U_flag_1];
     auto I_flag <> OR(3) <> [I_flag_0, I_flag_1, I_flag_2];
 
-    let branch(cond, pred) = MUX(1) <> [cond, CAST <> 1'b0, pred];
-    auto extOP <> OR(5) <> [
-        branch(U_flag, 3'b001),
-        branch(I_flag, 3'b000),
-        branch(J_flag, 3'b100),
-        branch(B_flag, 3'b011),
-        branch(S_flag, 3'b010)
+    let case(cond, pred) = MUX(1) <> [cond, CAST <> 1'b0, pred];
+    
+    ctl.ext_op <> OR(5) <> [
+        case(U_flag, 3'b001),
+        case(I_flag, 3'b000),
+        case(J_flag, 3'b100),
+        case(B_flag, 3'b011),
+        case(S_flag, 3'b010)
     ];
     
-    auto regWr <> OR(4) <> [U_flag, I_flag, R_flag, J_flag];
+    ctl.reg_wr <> OR(4) <> [U_flag, I_flag, R_flag, J_flag];
 
     auto de_func3 <> DECODER(3) <> func3;
-    auto branch_ctl <> OR(3) <> [
-        branch(J_flag,   3'b001),
-        branch(I_flag_1, 3'b010),
-        branch(B_flag, OR(6) <> [
-                branch(de_func3[3'b000], 3'b100), // beq
-                branch(de_func3[3'b001], 3'b101), // bne
-                branch(de_func3[3'b100], 3'b110), // blt
-                branch(de_func3[3'b101], 3'b111), // bge
-                branch(de_func3[3'b110], 3'b110), // bltu
-                branch(de_func3[3'b111], 3'b111)  // bgeu
+    ctl.branch <> OR(3) <> [
+        case(J_flag,   3'b001),
+        case(I_flag_1, 3'b010),
+        case(B_flag, OR(6) <> [
+                case(de_func3[3'b000], 3'b100), // beq
+                case(de_func3[3'b001], 3'b101), // bne
+                case(de_func3[3'b100], 3'b110), // blt
+                case(de_func3[3'b101], 3'b111), // bge
+                case(de_func3[3'b110], 3'b110), // bltu
+                case(de_func3[3'b111], 3'b111)  // bgeu
             ]
         )
     ];
-    auto memToReg <> I_flag_2;
-    auto memWr <> S_flag;
-    auto memOP <> branch(OR <> [I_flag_2, S_flag], func3);
-    auto aSrc <> OR(3) <> [U_flag_1, J_flag, I_flag_1];
-    auto bSrc <> OR(3) <> [
-        branch(OR(5) <> [U_flag_0, U_flag_1, I_flag_0, I_flag_2, S_flag], 2'b01),
-        branch(OR <> [J_flag, I_flag_1], 2'b10),
-        branch(OR <> [R_flag, B_flag], 2'b00)
+    ctl.mem_to_reg <> I_flag_2;
+    ctl.mem_wr <> S_flag;
+    ctl.mem_op <> case(OR <> [I_flag_2, S_flag], func3);
+    ctl.a_src <> OR(3) <> [U_flag_1, J_flag, I_flag_1];
+    ctl.b_src <> OR(3) <> [
+        case(OR(5) <> [U_flag_0, U_flag_1, I_flag_0, I_flag_2, S_flag], 2'b01),
+        case(OR <> [J_flag, I_flag_1], 2'b10),
+        case(OR <> [R_flag, B_flag], 2'b00)
     ];
 
     auto arith_ctl <> OR(8) <> [
-        branch(de_func3[3'b000], CONCAT <> [AND <> [func7, R_flag], 3'b000]),
-        branch(de_func3[3'b001], 4'b0001),
-        branch(de_func3[3'b010], 4'b0010),
-        branch(de_func3[3'b011], 4'b1010),
-        branch(de_func3[3'b100], 4'b0100),
-        branch(de_func3[3'b101], CONCAT <> [func7, 3'b101]),
-        branch(de_func3[3'b110], 4'b0110),
-        branch(de_func3[3'b111], 4'b0111)
+        case(de_func3[3'b000], CONCAT <> [AND <> [func7, R_flag], 3'b000]),
+        case(de_func3[3'b001], 4'b0001),
+        case(de_func3[3'b010], 4'b0010),
+        case(de_func3[3'b011], 4'b1010),
+        case(de_func3[3'b100], 4'b0100),
+        case(de_func3[3'b101], CONCAT <> [func7, 3'b101]),
+        case(de_func3[3'b110], 4'b0110),
+        case(de_func3[3'b111], 4'b0111)
     ];
-    auto ctl <> OR(4) <> [
-        branch(U_flag_0, 4'b0011),
-        branch(OR <> [I_flag_0, R_flag], arith_ctl),
-        branch(B_flag, MUX(1) <> [AND <> [func3[2], func3[1]], 4'b0010, 4'b1010]),
-        branch(OR(5) <> [U_flag_1, J_flag, I_flag_1, I_flag_2, S_flag], 4'b0000)
+    ctl.alu_ctl <> OR(4) <> [
+        case(U_flag_0, 4'b0011),
+        case(OR <> [I_flag_0, R_flag], arith_ctl),
+        case(B_flag, MUX(1) <> [
+            AND <> [func3[2], func3[1]], 
+            4'b0010, 4'b1010
+        ]),
+        case(OR(5) <> [U_flag_1, J_flag, I_flag_1, I_flag_2, S_flag], 4'b0000)
     ];
 }
 
-component ImmSelector: [extOP, instr] -> [imm] {
-    wire extOP of bit(3);
+component IMM_SELECTOR: [ext_op, instr] -> [imm] {
+    wire ext_op of bit(3);
     wire instr of bit(32);
     wire imm   of bit(32);
 
@@ -131,33 +164,36 @@ component ImmSelector: [extOP, instr] -> [imm] {
     auto immJ <> CAST(32) <> CONCAT <> [instr[31], instr[19:12], instr[20], instr[30:21], 1'b0];
 
     wire mask of bit(8);
-    mask <> DECODER(3) <> extOP;
-    let branch(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
+    mask <> DECODER(3) <> ext_op;
+    let case(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
     imm <> OR(5) <> [
-        branch(3'b000, immI), branch(3'b001, immU), 
-        branch(3'b010, immS), branch(3'b011, immB), branch(3'b100, immJ)
+        case(3'b000, immI), 
+        case(3'b001, immU), 
+        case(3'b010, immS), 
+        case(3'b011, immB), 
+        case(3'b100, immJ)
     ];
 }
 
-component ALU: [a, b, ctl] -> [result, zero, less] {
+component ALU: [a, b, alu_ctl] -> [result, zero, less] {
     wire a, b       of bit(32);
-    wire ctl        of bit(4);
+    wire alu_ctl        of bit(4);
     wire zero, less of bit(1);
     wire result     of bit(32);
 
     wire mask       of bit(8);
-    mask <> DECODER(3) <> ctl[2:0];
-    let branch(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
-    let sign_branch(b0, b1) = MUX(1) <> [ctl[3], b0, b1];
+    mask <> DECODER(3) <> alu_ctl[2:0];
+    let case(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
+    let case_sign(b0, b1) = MUX(1) <> [alu_ctl[3], b0, b1];
     result <> OR(8) <> [
-        branch(3'b000, sign_branch(ADD <> [a, b], SUB <> [a, b])),
-        branch(3'b001, SHL <> [a, b[4:0]]),
-        branch(3'b010, CONCAT <> [31'b0, sign_branch(SLT <> [a, b], ULT <> [a, b])]),
-        branch(3'b011, b),
-        branch(3'b100, XOR <> [a, b]),
-        branch(3'b101, sign_branch(LSHR <> [a, b[4:0]], ASHR <> [a, b[4:0]])),
-        branch(3'b110, OR <> [a, b]),
-        branch(3'b111, AND <> [a, b])
+        case(3'b000, case_sign(ADD <> [a, b], SUB <> [a, b])                    ),
+        case(3'b001, SHL <> [a, b[4:0]]                                         ),
+        case(3'b010, CONCAT <> [31'b0, case_sign(SLT <> [a, b], ULT <> [a, b])] ),
+        case(3'b011, b                                                          ),
+        case(3'b100, XOR <> [a, b]                                              ),
+        case(3'b101, case_sign(LSHR <> [a, b[4:0]], ASHR <> [a, b[4:0]])        ),
+        case(3'b110, OR <> [a, b]                                               ),
+        case(3'b111, AND <> [a, b]                                              )
     ];
 
     zero <> MUX(1) <> [mask[3'b010],
@@ -167,21 +203,21 @@ component ALU: [a, b, ctl] -> [result, zero, less] {
     less <> result[0];
 }
 
-component BranchCond : [branch_ctl, zero, less] -> [PCAsrc, PCBsrc] {
-    wire branch_ctl     of bit(3);
+component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
+    wire branch         of bit(3);
     wire zero, less     of bit(1);
     wire PCAsrc, PCBsrc of bit(1);
 
-    auto mask <> DECODER(3) <> branch_ctl;
-    let branch(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
+    auto mask <> DECODER(3) <> branch;
+    let case(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
     auto result <> OR(7) <> [
-        branch(3'b000, 2'b00),
-        branch(3'b001, 2'b10),
-        branch(3'b010, 2'b11),
-        branch(3'b100, CONCAT <> [zero, 1'b0]),
-        branch(3'b101, CONCAT <> [NOT <> zero, 1'b0]),
-        branch(3'b110, CONCAT <> [less, 1'b0]),
-        branch(3'b111, CONCAT <> [NOT <> less, 1'b0])
+        case(3'b000, 2'b00                         ),
+        case(3'b001, 2'b10                         ),
+        case(3'b010, 2'b11                         ),
+        case(3'b100, CONCAT <> [zero, 1'b0]        ),
+        case(3'b101, CONCAT <> [NOT <> zero, 1'b0] ),
+        case(3'b110, CONCAT <> [less, 1'b0]        ),
+        case(3'b111, CONCAT <> [NOT <> less, 1'b0] )
     ];
     PCAsrc <> result[1];
     PCBsrc <> result[0];

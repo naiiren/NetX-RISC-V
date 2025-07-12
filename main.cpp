@@ -144,15 +144,15 @@ int main() {
         ctx.update_by_name("rst", value_t{1, 0});
 
         for (int i = 0 ; i != 1000; ++i) {
-            const auto instr = instr_mem->read_word(ctx.get_by_name("imemAddr"));
+            const auto instr = instr_mem->read_word(ctx.circuit.get_value(4));
             ctx.flip_by_name("clk");
 
-            ctx.update_by_name("imemDataOut", instr);
+            ctx.update_by_name("instr", instr);
 
-            auto d_mem_op = ctx.get_by_name("dmemOp");
-            auto d_mem_addr = ctx.get_by_name("dmemAddr");
-            if (ctx.get_by_name("dmemWe") == high) {
-                auto d_mem_in = ctx.get_by_name("dmemDataIn");
+            auto d_mem_op = ctx.get_by_name("dmem_op");
+            auto d_mem_addr = ctx.get_by_name("dmem_addr");
+            if (ctx.get_by_name("dmem_wr") == high) {
+                auto d_mem_in = ctx.get_by_name("dmem_in");
                 data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
             }
 
@@ -167,7 +167,7 @@ int main() {
             }
 
             ctx.flip_by_name("clk");
-            ctx.update_by_name("dmemDataOut", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.update_by_name("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
         }
         delete instr_mem;
         delete data_mem;
