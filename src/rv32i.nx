@@ -3,6 +3,7 @@ application rv32i;
 import std.selector.*;
 import std.utils.REG;
 import std.memory.REG_FILE;
+import std.arith.BARREL_SHIFTER;
 
 component CORE : [clk, rst, instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr] {
     wire clk of clock();
@@ -175,33 +176,6 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
     ];
 }
 
-component ALU: [a, b, alu_ctl] -> [result, zero, less] {
-    wire a, b       of bit(32);
-    wire alu_ctl        of bit(4);
-    wire zero, less of bit(1);
-    wire result     of bit(32);
-
-    wire mask       of bit(8);
-    mask <> DECODER(3) <> alu_ctl[2:0];
-    let case(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
-    let case_sign(b0, b1) = MUX(1) <> [alu_ctl[3], b0, b1];
-    result <> OR(8) <> [
-        case(3'b000, case_sign(ADD <> [a, b], SUB <> [a, b])                    ),
-        case(3'b001, SHL <> [a, b[4:0]]                                         ),
-        case(3'b010, CONCAT <> [31'b0, case_sign(SLT <> [a, b], ULT <> [a, b])] ),
-        case(3'b011, b                                                          ),
-        case(3'b100, XOR <> [a, b]                                              ),
-        case(3'b101, case_sign(LSHR <> [a, b[4:0]], ASHR <> [a, b[4:0]])        ),
-        case(3'b110, OR <> [a, b]                                               ),
-        case(3'b111, AND <> [a, b]                                              )
-    ];
-
-    zero <> MUX(1) <> [mask[3'b010],
-        NOT <> OR(32) <> [result[i] | i in [0..32]],
-        EQ <> [a, b]
-    ];
-    less <> result[0];
-}
 
 component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
     wire branch         of bit(3);

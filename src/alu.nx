@@ -1,0 +1,80 @@
+application rv32i;
+
+component ALU : [a, b, alu_ctl] -> [result, zero, less] {
+    wire a, b       of bit(32);
+    wire alu_ctl    of bit(4);
+    wire zero, less of bit(1);
+    wire result     of bit(32);
+
+    auto [opcode, AL, LR, US, cin] <> ALU_CONTROLLER <> alu_ctl;
+    auto [adder_result, carry, zero, overflow] <> ADDER <> [
+        a, XOR <> [b, CAST(32) <> cin], cin
+    ];
+    less <> MUX(1) <> [
+        US,
+        XOR <> [carry, cin],
+        XOR <> [overflow, adder_result[31]]
+    ];
+    
+    auto shift_result <> BARREL_SHIFTER(5) <> {
+        din   : a,
+        shamt : b[4:0], 
+        dir   : LR,
+        arith : AL
+    };
+
+    result <> MUX(3) <> [
+        alu_ctl[2:0],
+        adder_result,
+        shift_result,
+        UCAST(32) <> less,
+        b,
+        XOR <> [a, b],
+        shift_result,
+        OR <> [a, b],
+        AND <> [a, b]
+    ];
+}
+
+component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
+    auto opcode <> alu_ctl[2:0];
+    auto     AL <> alu_ctl[3];
+    auto     LR <> alu_ctl[2];
+    auto     US <> NOT <> alu_ctl[3];
+    auto    cin <> OR <> [alu_ctl[3], EQ <> [3'b010, opcode]];
+}
+
+component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
+    wire a, b, sum                  of bit(32);
+    wire cin, carry, zero, overflow of bit(1);
+
+    let P(i) =  OR <> [a[i], b[i]];
+    let G(i) = AND <> [a[i], b[i]];
+    let C(i) = 
+        if i == 0 then cin
+        else OR <> [G(i-1), AND <> [P(i-1), C(i-1)]];
+
+    for (i in [0..32]) {
+        sum[i] <> XOR <> [a[i], b[i], C(i)];
+    }
+    carry <> C(32);
+    zero <> NOT <> OR <> [sum[i] | i in [0..32]];
+    overflow <> AND <> [
+        XNOR <> [a[31], b[31]],
+        XOR  <> [a[31], sum[31]]
+    ];
+}
+
+component FA : [a, b, cin] -> [carry, sum] {
+    wire a, b, cin, carry, sum of bit(1);
+    [carry, sum] 
+        <> [OR, TO] 
+        <> [TO, HA] 
+        <> [HA, TO] <> [a, b, cin];
+}
+
+component HA : [a, b] -> [carry, sum] {
+    wire a, b, carry, sum of bit(1);
+    carry <> AND <> [a, b];
+    sum   <> XOR <> [a, b];
+}
