@@ -60,7 +60,7 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
     carry <> C(32);
     zero <> NOT <> OR <> [sum[i] | i in [0..32]];
     overflow <> AND <> [
-        XNOR <> [a[31], b[31]],
+        NOT <> XOR <> [a[31], b[31]],
         XOR  <> [a[31], sum[31]]
     ];
 }

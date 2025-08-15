@@ -144,7 +144,7 @@ int main() {
         ctx.update_by_name("rst", value_t{1, 0});
 
         for (int i = 0 ; i != 1000; ++i) {
-            const auto instr = instr_mem->read_word(ctx.circuit.get_value(4));
+            const auto instr = instr_mem->read_word(ctx.get_by_name("imem_addr"));
             ctx.flip_by_name("clk");
 
             ctx.update_by_name("instr", instr);
