@@ -164,16 +164,15 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
     auto immB <> CAST(32) <> CONCAT <> [instr[31], instr[7], instr[30:25], instr[11:8], 1'b0];
     auto immJ <> CAST(32) <> CONCAT <> [instr[31], instr[19:12], instr[20], instr[30:21], 1'b0];
 
-    wire mask of bit(8);
-    mask <> DECODER(3) <> ext_op;
-    let case(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
-    imm <> OR(5) <> [
-        case(3'b000, immI), 
-        case(3'b001, immU), 
-        case(3'b010, immS), 
-        case(3'b011, immB), 
-        case(3'b100, immJ)
-    ];
+    imm <> MUX(3) <> {
+        sel : ext_op,
+        case[3'b000] : immI,
+        case[3'b001] : immU,
+        case[3'b010] : immS,
+        case[3'b011] : immB,
+        case[3'b100] : immJ,
+        $default : 32'b0
+    };
 }
 
 
@@ -182,17 +181,15 @@ component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
     wire zero, less     of bit(1);
     wire PCAsrc, PCBsrc of bit(1);
 
-    auto mask <> DECODER(3) <> branch;
-    let case(i, pred) = MUX(1) <> [mask[i], CAST <> 1'b0, pred];
-    auto result <> OR(7) <> [
-        case(3'b000, 2'b00                         ),
-        case(3'b001, 2'b10                         ),
-        case(3'b010, 2'b11                         ),
-        case(3'b100, CONCAT <> [zero, 1'b0]        ),
-        case(3'b101, CONCAT <> [NOT <> zero, 1'b0] ),
-        case(3'b110, CONCAT <> [less, 1'b0]        ),
-        case(3'b111, CONCAT <> [NOT <> less, 1'b0] )
-    ];
-    PCAsrc <> result[1];
-    PCBsrc <> result[0];
+    [PCAsrc, PCBsrc] <> SPLIT(2) <> MUX(3) <> {
+        sel : branch,
+        case[3'b000] : 2'b00,
+        case[3'b001] : 2'b10,
+        case[3'b010] : 2'b11,
+        case[3'b100] : CONCAT <> [zero, 1'b0],
+        case[3'b101] : CONCAT <> [NOT <> zero, 1'b0],
+        case[3'b110] : CONCAT <> [less, 1'b0],
+        case[3'b111] : CONCAT <> [NOT <> less, 1'b0],
+        $default : 2'b00
+    };
 }

@@ -23,17 +23,17 @@ component ALU : [a, b, alu_ctl] -> [result, zero, less] {
         arith : AL
     };
 
-    result <> MUX(3) <> [
-        alu_ctl[2:0],
-        adder_result,
-        shift_result,
-        UCAST(32) <> less,
-        b,
-        XOR <> [a, b],
-        shift_result,
-        OR <> [a, b],
-        AND <> [a, b]
-    ];
+    result <> MUX(3) <> {
+        sel : alu_ctl[2:0],
+        case [3'b000] : adder_result,
+        case [3'b001] : shift_result,
+        case [3'b010] : UCAST(32) <> less,
+        case [3'b011] : b,
+        case [3'b100] : XOR <> [a, b],
+        case [3'b101] : shift_result,
+        case [3'b110] : OR <> [a, b],
+        case [3'b111] : AND <> [a, b]
+    };
 }
 
 component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
