@@ -2,9 +2,10 @@
 #include <filesystem>
 #include <format>
 
-#define SIZED_MPINT_BACKEND boost::multiprecision::uint128_t
-#include <nxsim/parallel.h>
-#include <nxsim/circuit_parser.h>
+#include <nxsim/multiprecision/arithmetic_backend.h>
+#define SIZED_MPINT_BACKEND boost::multiprecision::uint64_based_int
+#include <nxsim/circuit/parallel.h>
+#include <nxsim/circuit/circuit_parser.h>
 
 using namespace nxon;
 
