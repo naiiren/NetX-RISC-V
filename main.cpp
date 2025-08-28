@@ -1,7 +1,9 @@
 #include <fstream>
 #include <filesystem>
 #include <format>
-#include <nxsim/circuit.h>
+
+#define SIZED_MPINT_BACKEND boost::multiprecision::uint128_t
+#include <nxsim/parallel.h>
 #include <nxsim/circuit_parser.h>
 
 using namespace nxon;
@@ -113,7 +115,9 @@ void print(const std::string &head, const value_t &value) {
 int main() {
     std::string json;
     std::getline(std::cin, json);
-    auto ctx = parse_circuit(nlohmann::json::parse(json));
+    parallel_parse_context ctx;
+    parse_circuit(ctx, json);
+    ctx.init_parallel();
 
     using namespace std::chrono;
     const auto start = high_resolution_clock::now();
@@ -137,17 +141,23 @@ int main() {
         const auto instr_mem = new Memory(std::ifstream(file_path));
         const auto data_mem = new Memory(std::ifstream(file_path.replace_extension(".data")));
 
-        ctx.flip_by_name("clk");
-        ctx.update_by_name("rst", value_t{1, 1});
-        ctx.flip_by_name("clk");
-        ctx.flip_by_name("clk");
-        ctx.update_by_name("rst", value_t{1, 0});
+        ctx.broadcast_flip_by_name("clk");
+        ctx.broadcast_by_name("rst", value_t{1, 1});
+        ctx.run_to_fixed();
+        ctx.broadcast_flip_by_name("clk");
+        ctx.run_to_fixed();
+        ctx.broadcast_flip_by_name("clk");
+        ctx.run_to_fixed();
+
+        ctx.broadcast_by_name("rst", value_t{1, 0});
+        ctx.run_to_fixed();
 
         for (int i = 0 ; i != 1000; ++i) {
             const auto instr = instr_mem->read_word(ctx.get_by_name("imem_addr"));
-            ctx.flip_by_name("clk");
+            ctx.broadcast_flip_by_name("clk");
 
-            ctx.update_by_name("instr", instr);
+            ctx.broadcast_by_name("instr", instr);
+            ctx.run_to_fixed();
 
             auto d_mem_op = ctx.get_by_name("dmem_op");
             auto d_mem_addr = ctx.get_by_name("dmem_addr");
@@ -166,8 +176,9 @@ int main() {
                 break;
             }
 
-            ctx.flip_by_name("clk");
-            ctx.update_by_name("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.broadcast_flip_by_name("clk");
+            ctx.broadcast_by_name("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.run_to_fixed();
         }
         delete instr_mem;
         delete data_mem;
