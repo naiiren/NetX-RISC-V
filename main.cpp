@@ -2,8 +2,7 @@
 #include <filesystem>
 #include <format>
 
-#include <nxsim/multiprecision/arithmetic_backend.h>
-#define SIZED_MPINT_BACKEND boost::multiprecision::uint64_based_int
+#define SIZED_MPINT_BACKEND uint64_t
 #include <nxsim/circuit/parallel.h>
 #include <nxsim/circuit/circuit_parser.h>
 
