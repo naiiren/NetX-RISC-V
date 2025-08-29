@@ -1,10 +1,10 @@
 #include <fstream>
+#include <print>
+#include <iostream>
 #include <filesystem>
-#include <format>
 
-#define SIZED_MPINT_BACKEND uint64_t
-#include <nxsim/circuit/parallel.h>
-#include <nxsim/circuit/circuit_parser.h>
+#define NX_BACKEND uint64_t
+#include <nxsim/simulation.h>
 
 using namespace nxon;
 
@@ -28,7 +28,7 @@ class Memory {
     [[nodiscard]] unsigned read_bytes(unsigned addr, const unsigned offset) const {
         addr &= MEMORY_SIZE - 1;
         unsigned result = 0;
-        for (int i = 0; i != offset; ++i) {
+        for (unsigned i = 0; i != offset; ++i) {
             result <<= 8;
             result |= static_cast<unsigned>(memory[addr + offset - i - 1]);
         }
@@ -37,7 +37,7 @@ class Memory {
 
     void write_bytes(unsigned addr, unsigned value, const unsigned offset) {
         addr &= MEMORY_SIZE - 1;
-        for (int i = 0; i != offset; ++i) {
+        for (unsigned i = 0; i != offset; ++i) {
             memory[addr + i] = static_cast<std::byte>(value & 0xFF);
             value >>= 8;
         }
@@ -108,15 +108,95 @@ public:
     }
 };
 
-void print(const std::string &head, const value_t &value) {
-    std::cout << head << std::setw(8) << std::setfill('0') << std::hex << static_cast<unsigned>(value) << '\t';
+namespace nxon::impl {
+    struct alu_rule final : rule_impl {
+        source_t a, b, alu_ctl;
+        sink_t result, zero, less;
+
+        alu_rule(source_t a, source_t b, source_t alu_ctl, sink_t result, sink_t zero, sink_t less)
+            : rule_impl(
+                a.dependencies() + b.dependencies() + alu_ctl.dependencies(),
+                result.outcomes() + zero.outcomes() + less.outcomes()
+            ),
+            a(std::move(a)), 
+            b(std::move(b)), 
+            alu_ctl(std::move(alu_ctl)),
+            result(std::move(result)), 
+            zero(std::move(zero)), 
+            less(std::move(less)) {}
+
+        indirect_id_set perform(value_storage &values) const override {
+            const auto a_val = *a.get(values);
+            const auto b_val = *b.get(values);
+            const auto ctl = static_cast<uint64_t>(*alu_ctl.get(values));
+
+            value_t res;
+            switch (ctl) {
+                case 0b0000u : res = a_val + b_val; break; // ADD
+                case 0b1000u : res = a_val - b_val; break; // SUB
+                case 0b0001u :
+                case 0b1001u : res = a_val << static_cast<unsigned>(b_val.unsigned_resize(5)); break; // SLL
+                case 0b0010u : res = value_t{32, a_val.signed_compare(b_val) == std::strong_ordering::less}; break; // SLT
+                case 0b1010u : res = value_t{32, a_val <=> b_val == std::strong_ordering::less}; break; // SLTU
+                case 0b0011u :
+                case 0b1011u : res = b_val; break;
+                case 0b0100u :
+                case 0b1100u : res = a_val ^ b_val; break; // XOR
+                case 0b0101u : res = a_val >> static_cast<unsigned>(b_val.unsigned_resize(5)); break; // SRL
+                case 0b1101u : res = a_val.arithmetic_shr(static_cast<unsigned>(b_val.unsigned_resize(5))); break; // SRA
+                case 0b0110u :
+                case 0b1110u : res = a_val | b_val; break; // OR
+                case 0b0111u :
+                case 0b1111u : res = a_val & b_val; break; // AND
+                default: std::unreachable();
+            }
+
+            std::vector<id_t> changes;
+            if (result.check(values, res)) {
+                result.put(values, res);
+                changes.insert(changes.end(), result.outcomes().begin(), result.outcomes().end());
+            }
+
+            if (const auto next_zero = value_t{1, ctl == 0b0010 || ctl == 0b1010 ? a_val == b_val : static_cast<uint64_t>(res) == 0}; zero.check(values, next_zero)) {
+                zero.put(values, next_zero);
+                changes.insert(changes.end(), zero.outcomes().begin(), zero.outcomes().end());
+            }
+
+            if (const auto next_less = value_t{1, static_cast<uint64_t>(res)}; less.check(values, next_less)) {
+                less.put(values, next_less);
+                changes.insert(changes.end(), less.outcomes().begin(), less.outcomes().end());
+            }
+            return indirect_id_set(id_set{changes.begin(), changes.end()});
+        }
+
+        static rule_t parse(const parse_context &ctx, const nlohmann::json &json) {
+            const auto &input = json["input"];
+            const auto &output = json["output"];
+
+            return rule_t{new alu_rule(
+                parse_source(input.at(0), ctx),
+                parse_source(input.at(1), ctx),
+                parse_source(input.at(2), ctx),
+                parse_sink(output.at(0), ctx),
+                parse_sink(output.at(1), ctx),
+                parse_sink(output.at(2), ctx)
+            )};
+        }
+    };
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    bool enable_native = true;
+    enable_native = !(argc > 1 && std::string(argv[1]) == "--no-native");
+
     std::string json;
     std::getline(std::cin, json);
     parallel_parse_context ctx;
-    parse_circuit(ctx, json);
+    if (enable_native) {
+        parse_circuit(ctx, json, {{"ALU", std::function(impl::alu_rule::parse)}});
+    } else {
+        parse_circuit(ctx, json);
+    }
     ctx.init_parallel();
 
     using namespace std::chrono;
@@ -183,7 +263,7 @@ int main() {
         delete instr_mem;
         delete data_mem;
     }
-    std::cout << std::format("Passed {}/{} test cases\n", passed, total);
+    std::print("Passed {}/{} test cases\n", passed, total);
 
     const auto end = high_resolution_clock::now();
     std::chrono::duration<double> elapsed_seconds = end - start;
