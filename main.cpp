@@ -191,13 +191,13 @@ int main(int argc, char *argv[]) {
 
     std::string json;
     std::getline(std::cin, json);
-    parallel_parse_context ctx;
+    partitioned_parse_context ctx;
     if (enable_native) {
         parse_circuit(ctx, json, {{"ALU", std::function(impl::alu_rule::parse)}});
     } else {
         parse_circuit(ctx, json);
     }
-    ctx.init_parallel();
+    ctx.init_partition();
 
     using namespace std::chrono;
     const auto start = high_resolution_clock::now();
