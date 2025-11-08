@@ -221,23 +221,23 @@ int main(int argc, char *argv[]) {
         const auto instr_mem = new Memory(std::ifstream(file_path));
         const auto data_mem = new Memory(std::ifstream(file_path.replace_extension(".data")));
 
-        ctx.broadcast_flip_by_name("clk");
-        ctx.broadcast_by_name("rst", value_t{1, 1});
-        ctx.run_to_fixed();
-        ctx.broadcast_flip_by_name("clk");
-        ctx.run_to_fixed();
-        ctx.broadcast_flip_by_name("clk");
-        ctx.run_to_fixed();
+        ctx.cached_flip_by_name("clk");
+        ctx.cached_update_by_name("rst", value_t{1, 1});
+        ctx.apply_cache();
+        ctx.cached_flip_by_name("clk");
+        ctx.apply_cache();
+        ctx.cached_flip_by_name("clk");
+        ctx.apply_cache();
 
-        ctx.broadcast_by_name("rst", value_t{1, 0});
-        ctx.run_to_fixed();
+        ctx.cached_update_by_name("rst", value_t{1, 0});
+        ctx.apply_cache();
 
         for (int i = 0 ; i != 1000; ++i) {
             const auto instr = instr_mem->read_word(ctx.get_by_name("imem_addr"));
-            ctx.broadcast_flip_by_name("clk");
+            ctx.cached_flip_by_name("clk");
 
-            ctx.broadcast_by_name("instr", instr);
-            ctx.run_to_fixed();
+            ctx.cached_update_by_name("instr", instr);
+            ctx.apply_cache();
 
             auto d_mem_op = ctx.get_by_name("dmem_op");
             auto d_mem_addr = ctx.get_by_name("dmem_addr");
@@ -256,9 +256,9 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            ctx.broadcast_flip_by_name("clk");
-            ctx.broadcast_by_name("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
-            ctx.run_to_fixed();
+            ctx.cached_flip_by_name("clk");
+            ctx.cached_update_by_name("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.apply_cache();
         }
         delete instr_mem;
         delete data_mem;
