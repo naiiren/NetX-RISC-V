@@ -221,33 +221,33 @@ int main(int argc, char *argv[]) {
         const auto instr_mem = new Memory(std::ifstream(file_path));
         const auto data_mem = new Memory(std::ifstream(file_path.replace_extension(".data")));
 
-        ctx.cached_flip_by_name("clk");
-        ctx.cached_update_by_name("rst", value_t{1, 1});
-        ctx.apply_cache();
-        ctx.cached_flip_by_name("clk");
-        ctx.apply_cache();
-        ctx.cached_flip_by_name("clk");
-        ctx.apply_cache();
+        ctx.stashed_flip("clk");
+        ctx.stashed_set("rst", value_t{1, 1});
+        ctx.apply_stash();
+        ctx.stashed_flip("clk");
+        ctx.apply_stash();
+        ctx.stashed_flip("clk");
+        ctx.apply_stash();
 
-        ctx.cached_update_by_name("rst", value_t{1, 0});
-        ctx.apply_cache();
+        ctx.stashed_set("rst", value_t{1, 0});
+        ctx.apply_stash();
 
         for (int i = 0 ; i != 1000; ++i) {
-            const auto instr = instr_mem->read_word(ctx.get_by_name("imem_addr"));
-            ctx.cached_flip_by_name("clk");
+            const auto instr = instr_mem->read_word(ctx.get("imem_addr"));
+            ctx.stashed_flip("clk");
 
-            ctx.cached_update_by_name("instr", instr);
-            ctx.apply_cache();
+            ctx.stashed_set("instr", instr);
+            ctx.apply_stash();
 
-            auto d_mem_op = ctx.get_by_name("dmem_op");
-            auto d_mem_addr = ctx.get_by_name("dmem_addr");
-            if (ctx.get_by_name("dmem_wr") == high) {
-                auto d_mem_in = ctx.get_by_name("dmem_in");
+            auto d_mem_op = ctx.get("dmem_op");
+            auto d_mem_addr = ctx.get("dmem_addr");
+            if (ctx.get("dmem_wr") == high) {
+                auto d_mem_in = ctx.get("dmem_in");
                 data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
             }
 
             if (instr == magic_instr) {
-                if (static_cast<unsigned>(ctx.get_by_name("data[10]")) == 0x00c0ffee) {
+                if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
                     std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
                     passed++;
                 } else {
@@ -256,9 +256,9 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            ctx.cached_flip_by_name("clk");
-            ctx.cached_update_by_name("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
-            ctx.apply_cache();
+            ctx.stashed_flip("clk");
+            ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.apply_stash();
         }
         delete instr_mem;
         delete data_mem;
