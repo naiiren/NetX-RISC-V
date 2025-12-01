@@ -171,7 +171,7 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
         case[3'b010] : immS,
         case[3'b011] : immB,
         case[3'b100] : immJ,
-        $default : 32'b0
+        default : 32'b0
     };
 }
 
@@ -190,6 +190,6 @@ component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
         case[3'b101] : CONCAT <> [NOT <> zero, 1'b0],
         case[3'b110] : CONCAT <> [less, 1'b0],
         case[3'b111] : CONCAT <> [NOT <> less, 1'b0],
-        $default : 2'b00
+        default : 2'b00
     };
 }
