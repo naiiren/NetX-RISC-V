@@ -54,7 +54,7 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
         if i == 0 then cin
         else OR <> [G(i-1), AND <> [P(i-1), C(i-1)]];
 
-    for (i in [0..32]) {
+    for i in [0..32] {
         sum[i] <> XOR <> [a[i], b[i], C(i)];
     }
     carry <> C(32);
