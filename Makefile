@@ -1,7 +1,7 @@
 BUILD_DIR := build
 TARGET := $(BUILD_DIR)/rv32i_test
 
-.PHONY: all run clean
+.PHONY: all run raw custom-build run-custom clean
 
 all: $(TARGET)
 
@@ -16,6 +16,12 @@ run: all
 
 raw: all
 	nx compile _netx.toml --top CORE --minimal | $(TARGET) --no-native
+
+custom-build:
+	bash ./scripts/build_tests.sh
+
+run-custom: all custom-build
+	nx compile _netx.toml --top CORE --minimal | $(TARGET) --dir custom_cases
 
 clean:
 	rm $(TARGET)

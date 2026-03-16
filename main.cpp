@@ -2,6 +2,8 @@
 #include <print>
 #include <iostream>
 #include <filesystem>
+#include <vector>
+#include <string>
 
 #define NX_BACKEND uint64_t
 #include <nxsim/simulation.h>
@@ -187,7 +189,8 @@ namespace nxon::impl {
 
 int main(int argc, char *argv[]) {
     bool enable_native = true;
-    enable_native = !(argc > 1 && std::string(argv[1]) == "--no-native");
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--no-native") { enable_native = false; break; }
 
     std::string json;
     std::getline(std::cin, json);
@@ -203,67 +206,103 @@ int main(int argc, char *argv[]) {
     const auto start = high_resolution_clock::now();
 
     int passed = 0, total = 0;
-    for (std::filesystem::path path = std::filesystem::current_path().append("testcases");
-        const auto& entry : std::filesystem::directory_iterator(path)) {
-        std::filesystem::path file_path = entry.path();
 
-        if (file_path.extension() == ".data") {
-            continue;
+    // Run all .hex test cases found in a directory.
+    auto run_dir = [&](const std::string& dir_name, int max_cycles = 50000) {
+        std::filesystem::path dir = std::filesystem::current_path() / dir_name;
+        if (!std::filesystem::is_directory(dir)) {
+            std::cerr << "Warning: test directory not found: " << dir_name << "\n";
+            return;
         }
+        std::cout << "\n=== Running tests from '" << dir_name << "' ===\n";
 
-        if (file_path.filename() == "fence_i.hex") {
-            continue;
-        }
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            std::filesystem::path file_path = entry.path();
 
-        total++;
-        std::cout << "Running test case: " << file_path.filename();
+            if (file_path.extension() == ".data") continue;
+            if (file_path.extension() != ".hex")  continue;
+            if (file_path.filename() == "fence_i.hex") continue;
 
-        const auto instr_mem = new Memory(std::ifstream(file_path));
-        const auto data_mem = new Memory(std::ifstream(file_path.replace_extension(".data")));
+            total++;
+            std::cout << "Running test case: " << file_path.filename();
 
-        ctx.stashed_flip("clk");
-        ctx.stashed_set("rst", value_t{1, 1});
-        ctx.apply_stash();
-        ctx.stashed_flip("clk");
-        ctx.apply_stash();
-        ctx.stashed_flip("clk");
-        ctx.apply_stash();
+            const auto instr_mem = new Memory(std::ifstream(file_path));
+            const auto data_mem  = new Memory(std::ifstream(file_path.replace_extension(".data")));
 
-        ctx.stashed_set("rst", value_t{1, 0});
-        ctx.apply_stash();
-
-        for (int i = 0 ; i != 1000; ++i) {
-            const auto instr = instr_mem->read_word(ctx.get("imem_addr"));
             ctx.stashed_flip("clk");
-
-            ctx.stashed_set("instr", instr);
+            ctx.stashed_set("rst", value_t{1, 1});
+            ctx.apply_stash();
+            ctx.stashed_flip("clk");
+            ctx.apply_stash();
+            ctx.stashed_flip("clk");
             ctx.apply_stash();
 
-            auto d_mem_op = ctx.get("dmem_op");
-            auto d_mem_addr = ctx.get("dmem_addr");
-            if (ctx.get("dmem_wr") == high) {
-                auto d_mem_in = ctx.get("dmem_in");
-                data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
-            }
+            ctx.stashed_set("rst", value_t{1, 0});
+            ctx.apply_stash();
 
-            if (instr == magic_instr) {
-                if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
-                    std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
-                    passed++;
-                } else {
-                    std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
+            bool seen_magic  = false;
+            bool finished    = false;
+            int  drain_cycles = 0;
+            for (int i = 0; i != max_cycles; ++i) {
+                const auto instr = instr_mem->read_word(ctx.get("imem_addr"));
+                ctx.stashed_flip("clk");
+
+                ctx.stashed_set("instr", instr);
+                ctx.apply_stash();
+
+                auto d_mem_op   = ctx.get("dmem_op");
+                auto d_mem_addr = ctx.get("dmem_addr");
+                if (ctx.get("dmem_wr") == high) {
+                    auto d_mem_in = ctx.get("dmem_in");
+                    data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
                 }
-                break;
+
+                if (!seen_magic && instr == magic_instr) {
+                    seen_magic    = true;
+                    drain_cycles  = 128;  // pipeline drain window
+                }
+
+                if (seen_magic && drain_cycles == 0) {
+                    if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
+                        std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
+                        passed++;
+                    } else {
+                        std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
+                    }
+                    finished = true;
+                    break;
+                }
+
+                if (seen_magic) drain_cycles--;
+
+                ctx.stashed_flip("clk");
+                ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+                ctx.apply_stash();
             }
 
-            ctx.stashed_flip("clk");
-            ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
-            ctx.apply_stash();
+            if (!finished)
+                std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
+
+            delete instr_mem;
+            delete data_mem;
         }
-        delete instr_mem;
-        delete data_mem;
+    };
+
+    // Parse --dir arguments; default to the standard test suite
+    std::vector<std::string> test_dirs;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--no-native") continue;  // already handled
+        if (std::string(argv[i]) == "--dir" && i + 1 < argc) {
+            test_dirs.push_back(argv[++i]);
+        }
     }
-    std::print("Passed {}/{} test cases\n", passed, total);
+    if (test_dirs.empty())
+        test_dirs.push_back("testcases");
+
+    for (const auto& d : test_dirs)
+        run_dir(d);
+
+    std::print("\nPassed {}/{} test cases\n", passed, total);
 
     const auto end = high_resolution_clock::now();
     std::chrono::duration<double> elapsed_seconds = end - start;
