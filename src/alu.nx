@@ -1,5 +1,11 @@
 application rv32i;
 
+/**
+  * ALU Component
+  * This component implements the Arithmetic Logic Unit (ALU) for the RV32I architecture. 
+  * It performs various arithmetic and logical operations based on the control signals provided by the ALU controller.
+  * The ALU supports addition, subtraction, logical shifts, bitwise operations, and set-less-than comparisons.
+*/
 component ALU : [a, b, alu_ctl] -> [result, zero, less] {
     wire a, b       of bit(32);
     wire alu_ctl    of bit(4);
@@ -36,6 +42,16 @@ component ALU : [a, b, alu_ctl] -> [result, zero, less] {
     };
 }
 
+/**
+  * ALU Controller
+  * This component generates the control signals for the ALU based on the ALU control input from the instruction decoder.
+  * It decodes the ALU control signal to determine the operation type, shift direction, and whether to use arithmetic shifts.
+  * - opcode: Determines the specific ALU operation to perform (e.g., add, shift, set-less-than).
+  * - AL: Indicates if the operation is an arithmetic or logical shift.
+  * - LR: Determines the direction of the shift (left or right).
+  * - US: Indicates if the set-less-than operation should be unsigned.
+  * - cin: Carry-in for addition operations, which is used for subtraction and set-less-than comparisons.
+*/
 component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
     auto opcode <> alu_ctl[2:0];
     auto     AL <> alu_ctl[3];
@@ -44,6 +60,12 @@ component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
     auto    cin <> OR <> [alu_ctl[3], EQ <> [3'b010, opcode]];
 }
 
+/**
+  * Adder Component
+  * This component implements a 32-bit adder using a carry-lookahead approach for efficient addition.
+  * It takes two 32-bit inputs (a and b) and a carry-in (cin) to produce a 32-bit sum and a carry-out.
+  * The adder also generates flags for zero and overflow conditions, which are used by the ALU for certain operations.
+*/
 component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
     wire a, b, sum                  of bit(32);
     wire cin, carry, zero, overflow of bit(1);
@@ -63,18 +85,4 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
         NOT <> XOR <> [a[31], b[31]],
         XOR  <> [a[31], sum[31]]
     ];
-}
-
-component FA : [a, b, cin] -> [carry, sum] {
-    wire a, b, cin, carry, sum of bit(1);
-    [carry, sum] 
-        <> [OR, TO] 
-        <> [TO, HA] 
-        <> [HA, TO] <> [a, b, cin];
-}
-
-component HA : [a, b] -> [carry, sum] {
-    wire a, b, carry, sum of bit(1);
-    carry <> AND <> [a, b];
-    sum   <> XOR <> [a, b];
 }

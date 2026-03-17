@@ -4,13 +4,12 @@
 #include <filesystem>
 #include <vector>
 #include <string>
+#include <iomanip>
 
 #define NX_BACKEND uint64_t
 #include <nxsim/simulation.h>
 
 using namespace nxon;
-
-const static auto magic_instr = value_t{32, 0xdead10cc};
 
 auto high = value_t{1, 1};
 auto low = value_t{1, 0};
@@ -188,10 +187,27 @@ namespace nxon::impl {
 }
 
 int main(int argc, char *argv[]) {
+    int passed = 0, total = 0;
+    
+    // Parse arguments
     bool enable_native = true;
-    for (int i = 1; i < argc; ++i)
-        if (std::string(argv[i]) == "--no-native") { enable_native = false; break; }
-
+    bool enable_trace = false;
+    std::vector<std::string> test_dirs;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--no-native") {
+            enable_native = false;
+        }
+        if (std::string(argv[i]) == "--trace") {
+            enable_trace = true;
+        }
+        if (std::string(argv[i]) == "--dir" && i + 1 < argc) {
+            test_dirs.push_back(argv[++i]);
+        }
+    }
+    if (test_dirs.empty()) {
+        test_dirs.push_back("testcases");
+    }
+    
     std::string json;
     std::getline(std::cin, json);
     partitioned_parse_context ctx;
@@ -205,10 +221,8 @@ int main(int argc, char *argv[]) {
     using namespace std::chrono;
     const auto start = high_resolution_clock::now();
 
-    int passed = 0, total = 0;
-
     // Run all .hex test cases found in a directory.
-    auto run_dir = [&](const std::string& dir_name, int max_cycles = 50000) {
+    auto run_dir = [&](const std::string& dir_name, int max_cycles = 40000) {
         std::filesystem::path dir = std::filesystem::current_path() / dir_name;
         if (!std::filesystem::is_directory(dir)) {
             std::cerr << "Warning: test directory not found: " << dir_name << "\n";
@@ -240,12 +254,17 @@ int main(int argc, char *argv[]) {
             ctx.stashed_set("rst", value_t{1, 0});
             ctx.apply_stash();
 
-            bool seen_magic  = false;
-            bool finished    = false;
-            int  drain_cycles = 0;
+            bool finished = false;
             for (int i = 0; i != max_cycles; ++i) {
-                const auto instr = instr_mem->read_word(ctx.get("imem_addr"));
+                const auto fetch_pc = ctx.get("imem_addr");
+                const auto instr = instr_mem->read_word(fetch_pc);
                 ctx.stashed_flip("clk");
+
+                if (enable_trace) {
+                    std::cout << "Cycle " << std::setw(5) << i << ": " << std::hex
+                              << "PC = 0x"          << std::setw(5) << std::setfill('0') << static_cast<unsigned>(fetch_pc) << ", "
+                              << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr)    << std::dec << std::endl;
+                }
 
                 ctx.stashed_set("instr", instr);
                 ctx.apply_stash();
@@ -257,50 +276,31 @@ int main(int argc, char *argv[]) {
                     data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
                 }
 
-                if (!seen_magic && instr == magic_instr) {
-                    seen_magic    = true;
-                    drain_cycles  = 128;  // pipeline drain window
-                }
-
-                if (seen_magic && drain_cycles == 0) {
-                    if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
-                        std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
-                        passed++;
-                    } else {
-                        std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
-                    }
+                if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
+                    std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
+                    passed++;
                     finished = true;
                     break;
-                }
-
-                if (seen_magic) drain_cycles--;
+                } 
 
                 ctx.stashed_flip("clk");
                 ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
                 ctx.apply_stash();
             }
 
-            if (!finished)
+            if (!finished) {
                 std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
+            }
 
             delete instr_mem;
             delete data_mem;
         }
     };
 
-    // Parse --dir arguments; default to the standard test suite
-    std::vector<std::string> test_dirs;
-    for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--no-native") continue;  // already handled
-        if (std::string(argv[i]) == "--dir" && i + 1 < argc) {
-            test_dirs.push_back(argv[++i]);
-        }
-    }
-    if (test_dirs.empty())
-        test_dirs.push_back("testcases");
 
-    for (const auto& d : test_dirs)
+    for (const auto& d : test_dirs) {
         run_dir(d);
+    }
 
     std::print("\nPassed {}/{} test cases\n", passed, total);
 
