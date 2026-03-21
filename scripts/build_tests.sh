@@ -42,6 +42,7 @@ CFLAGS=(
 TEST_NAMES=(
     sort
     poly
+    fib
 )
 
 build_test() {

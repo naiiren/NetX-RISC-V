@@ -11,6 +11,8 @@
 
 using namespace nxon;
 
+const static auto magic_instr = value_t{32, 0xdead10cc};
+
 auto high = value_t{1, 1};
 auto low = value_t{1, 0};
 
@@ -221,6 +223,12 @@ int main(int argc, char *argv[]) {
     using namespace std::chrono;
     const auto start = high_resolution_clock::now();
 
+    auto hex32 = [](const value_t &v) {
+        std::ostringstream oss;
+        oss << "0x" << std::hex << std::setw(8) << std::setfill('0') << static_cast<unsigned>(v);
+        return oss.str();
+    };
+
     // Run all .hex test cases found in a directory.
     auto run_dir = [&](const std::string& dir_name, int max_cycles = 40000) {
         std::filesystem::path dir = std::filesystem::current_path() / dir_name;
@@ -254,7 +262,9 @@ int main(int argc, char *argv[]) {
             ctx.stashed_set("rst", value_t{1, 0});
             ctx.apply_stash();
 
+            bool seen_magic = false;
             bool finished = false;
+            int drain_cycles = 0;
             for (int i = 0; i != max_cycles; ++i) {
                 const auto fetch_pc = ctx.get("imem_addr");
                 const auto instr = instr_mem->read_word(fetch_pc);
@@ -263,7 +273,7 @@ int main(int argc, char *argv[]) {
                 if (enable_trace) {
                     std::cout << "Cycle " << std::setw(5) << i << ": " << std::hex
                               << "PC = 0x"          << std::setw(5) << std::setfill('0') << static_cast<unsigned>(fetch_pc) << ", "
-                              << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr)    << std::dec << std::endl;
+                              << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr)    << std::dec;
                 }
 
                 ctx.stashed_set("instr", instr);
@@ -271,17 +281,48 @@ int main(int argc, char *argv[]) {
 
                 auto d_mem_op   = ctx.get("dmem_op");
                 auto d_mem_addr = ctx.get("dmem_addr");
+                if (enable_trace) {
+                    std::cout << " | IFID(pc=" << hex32(ctx.get("ifid.pc")) << ", instr=" << hex32(ctx.get("ifid.instr"))
+                              << ", v=" << static_cast<unsigned>(ctx.get("ifid.valid")) << ")"
+                              << " IDEX(pc=" << hex32(ctx.get("idex.pc")) << ", rd=" << static_cast<unsigned>(ctx.get("idex.rd"))
+                              << ", rs1=" << static_cast<unsigned>(ctx.get("idex.rs1")) << ", rs2=" << static_cast<unsigned>(ctx.get("idex.rs2"))
+                              << ", ra=" << hex32(ctx.get("idex.ra")) << ", rb=" << hex32(ctx.get("idex.rb")) << ")"
+                              << " EX(res=" << hex32(ctx.get("ex_result")) << ", tgt=" << hex32(ctx.get("ex_branch_target"))
+                              << ", redir=" << static_cast<unsigned>(ctx.get("ex_redirect")) << ")"
+                              << " EXMEM(rd=" << static_cast<unsigned>(ctx.get("exmem.rd")) << ", res=" << hex32(ctx.get("exmem.result"))
+                              << ", store=" << hex32(ctx.get("exmem.store_data")) << ")"
+                              << " MEMWB(rd=" << static_cast<unsigned>(ctx.get("memwb.rd")) << ", res=" << hex32(ctx.get("memwb.result"))
+                              << ", mem=" << hex32(ctx.get("memwb.mem_data")) << ")"
+                              << " DMEM(addr=" << hex32(d_mem_addr) << ", in=" << hex32(ctx.get("dmem_in"))
+                              << ", op=" << static_cast<unsigned>(d_mem_op) << ", wr=" << static_cast<unsigned>(ctx.get("dmem_wr")) << ")"
+                              << std::endl;
+                }
                 if (ctx.get("dmem_wr") == high) {
                     auto d_mem_in = ctx.get("dmem_in");
                     data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
                 }
 
-                if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
-                    std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
-                    passed++;
+                if (!seen_magic &&
+                    ctx.get("ifid.valid") == high &&
+                    ctx.get("ifid.instr") == magic_instr) {
+                    seen_magic = true;
+                    drain_cycles = 128;
+                }
+
+                if (seen_magic && drain_cycles == 0) {
+                    if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
+                        std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
+                        passed++;
+                    } else {
+                        std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
+                    }
                     finished = true;
                     break;
-                } 
+                }
+
+                if (seen_magic) {
+                    drain_cycles--;
+                }
 
                 ctx.stashed_flip("clk");
                 ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
