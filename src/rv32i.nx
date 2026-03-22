@@ -55,17 +55,30 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
     wire id_imm of bit(32);
     id_ctl <> INSTR_DECODER <> [id_op, id_func3, id_func7[5]];
     id_imm <> IMM_SELECTOR  <> [id_ctl.ext_op, ifid.instr];
-    // The previous load-use interlock dropped the following instruction on recursive code paths.
-    // EX/MEM and MEM/WB forwarding are sufficient for the current timing model.
     auto id_stall <> 1'b0;
 
-    // Decode-time JAL predictor used to skip an extra bubble on direct jumps.
-    auto [id_redirect, id_jump_target] <> BRANCH_PREDICTOR <> [ifid.valid, id_ctl.branch, ifid.pc, id_imm];
+    // Decode-time branch prediction:
+    // - direct JAL uses the immediate target immediately,
+    // - conditional branches query the BTB and 2-bit counters,
+    // - resolved EX results feed back into the predictor state.
+    auto [id_redirect, id_jump_target] <> BRANCH_PREDICTOR <> {
+        clk           : clk,
+        rst           : rst,
+        valid         : ifid.valid,
+        branch        : id_ctl.branch,
+        pc            : ifid.pc,
+        imm           : id_imm,
+        update_valid  : idex.valid,
+        update_branch : idex.branch,
+        update_pc     : idex.pc,
+        update_taken  : ex_actual_taken,
+        update_target : ex_branch_target
+    };
 
     // ===== WB view used by ID bypass and register-file writeback =====
     auto wb_result <> MUX(1) <> [memwb.mem_to_reg, memwb.result, memwb.mem_data];
-    auto exmem_fwd_ok <> AND <> [exmem.valid, exmem.reg_wr];
-    auto memwb_fwd_ok <> AND <> [memwb.valid, memwb.reg_wr];
+    auto exmem_fwd_ok <> AND(3) <> [exmem.valid, exmem.reg_wr, rd_nonzero(exmem.rd)];
+    auto memwb_fwd_ok <> AND(3) <> [memwb.valid, memwb.reg_wr, rd_nonzero(memwb.rd)];
     auto exmem_fwd_data <> MUX(1) <> [exmem.mem_to_reg, exmem.result, dmem_out];
 
     auto [id_ra, id_rb] <> REG_FILE (
@@ -149,7 +162,12 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
         MUX(2) <> [idex.b_src, ex_rb_fwd, idex.imm, 32'd4, 32'd4],
         idex.alu_ctl
     ];
-    auto ex_redirect <> AND <> [idex.valid, OR <> [ex_pc_a_src, ex_pc_b_src]];
+    auto ex_actual_taken <> OR <> [ex_pc_a_src, ex_pc_b_src];
+    auto ex_fallthrough_pc <> ADD <> [idex.pc, 32'd4];
+    auto ex_correct_pc <> MUX(1) <> [ex_actual_taken, ex_fallthrough_pc, ex_branch_target];
+    auto ex_predicted_pc <> MUX(1) <> [idex.pred_taken, ex_fallthrough_pc, idex.pred_target];
+    auto ex_mispredict <> NOT <> EQ <> [ex_predicted_pc, ex_correct_pc];
+    auto ex_redirect <> AND <> [idex.valid, ex_mispredict];
     auto ex_redirect_flush <> ex_redirect;
     auto redirect_flush <> OR <> [id_redirect, ex_redirect_flush];
     auto redirect_flush_d1 <> reg(1'b0) <> [redirect_flush];
@@ -168,7 +186,7 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
             ],
             imem_addr
         ], 
-        ex_branch_target
+        ex_correct_pc
     ];
     imem_addr <> MUX(1) <> [rst, PC, 32'd0];
 
@@ -182,7 +200,7 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
         id_stall,
         MUX(1) <> [
             if_flush,
-            last_pc,
+            SUB <> [PC, 32'd4],
             32'd0
         ],
         ifid.pc
@@ -198,23 +216,25 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
     ];
 
     // ===== ID/EX register: either forward decoded values or insert a bubble =====
-    auto idex_flush <> OR <> [ex_redirect_flush, redirect_flush_d1, id_stall];
-    idex.valid      <> reg(1'b0)    <> MUX(1) <> [idex_flush, ifid.valid, 1'b0];
-    idex.pc         <> reg(32'd0)   <> MUX(1) <> [idex_flush, ifid.pc, 32'd0];
-    idex.ra         <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_ra_eff, 32'd0];
-    idex.rb         <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_rb_eff, 32'd0];
-    idex.imm        <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_imm, 32'd0];
-    idex.rs1        <> reg(5'd0)    <> MUX(1) <> [idex_flush, id_rs1, 5'd0];
-    idex.rs2        <> reg(5'd0)    <> MUX(1) <> [idex_flush, id_rs2, 5'd0];
-    idex.rd         <> reg(5'd0)    <> MUX(1) <> [idex_flush, id_rd, 5'd0];
-    idex.reg_wr     <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.reg_wr, 1'b0];
-    idex.branch     <> reg(3'b000)  <> MUX(1) <> [idex_flush, id_ctl.branch, 3'b000];
-    idex.mem_to_reg <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.mem_to_reg, 1'b0];
-    idex.mem_wr     <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.mem_wr, 1'b0];
-    idex.mem_op     <> reg(3'b010)  <> MUX(1) <> [idex_flush, id_ctl.mem_op, 3'b010];
-    idex.a_src      <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.a_src, 1'b0];
-    idex.b_src      <> reg(2'b00)   <> MUX(1) <> [idex_flush, id_ctl.b_src, 2'b00];
-    idex.alu_ctl    <> reg(4'b0000) <> MUX(1) <> [idex_flush, id_ctl.alu_ctl, 4'b0000];
+    auto idex_flush  <> OR <> [ex_redirect_flush, redirect_flush_d1, id_stall];
+    idex.valid       <> reg(1'b0)    <> MUX(1) <> [idex_flush, ifid.valid, 1'b0];
+    idex.pc          <> reg(32'd0)   <> MUX(1) <> [idex_flush, ifid.pc, 32'd0];
+    idex.pred_taken  <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_redirect, 1'b0];
+    idex.pred_target <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_jump_target, 32'd0];
+    idex.ra          <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_ra_eff, 32'd0];
+    idex.rb          <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_rb_eff, 32'd0];
+    idex.imm         <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_imm, 32'd0];
+    idex.rs1         <> reg(5'd0)    <> MUX(1) <> [idex_flush, id_rs1, 5'd0];
+    idex.rs2         <> reg(5'd0)    <> MUX(1) <> [idex_flush, id_rs2, 5'd0];
+    idex.rd          <> reg(5'd0)    <> MUX(1) <> [idex_flush, id_rd, 5'd0];
+    idex.reg_wr      <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.reg_wr, 1'b0];
+    idex.branch      <> reg(3'b000)  <> MUX(1) <> [idex_flush, id_ctl.branch, 3'b000];
+    idex.mem_to_reg  <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.mem_to_reg, 1'b0];
+    idex.mem_wr      <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.mem_wr, 1'b0];
+    idex.mem_op      <> reg(3'b010)  <> MUX(1) <> [idex_flush, id_ctl.mem_op, 3'b010];
+    idex.a_src       <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_ctl.a_src, 1'b0];
+    idex.b_src       <> reg(2'b00)   <> MUX(1) <> [idex_flush, id_ctl.b_src, 2'b00];
+    idex.alu_ctl     <> reg(4'b0000) <> MUX(1) <> [idex_flush, id_ctl.alu_ctl, 4'b0000];
 
     // ===== EX/MEM register =====
     exmem.valid      <> reg(1'b0)   <> [idex.valid];
@@ -256,23 +276,25 @@ interface IF_ID_PIPE : [valid, pc, instr] {
   * This bundle defines the signals passed from the ID stage to the EX stage, including decoded
   * operand values, control signals, and metadata needed for execution and hazard handling.
 */
-interface ID_EX_PIPE : [valid, pc, ra, rb, imm, rs1, rs2, rd, reg_wr, branch, mem_to_reg, mem_wr, mem_op, a_src, b_src, alu_ctl] {
-    wire valid      of bit(1);  // Marks ID/EX entry as valid work for EX stage.
-    wire pc         of bit(32); // Instruction PC carried into EX.
-    wire ra         of bit(32); // Decoded/bypassed source operand A value.
-    wire rb         of bit(32); // Decoded/bypassed source operand B value.
-    wire imm        of bit(32); // Decoded immediate value.
-    wire rs1        of bit(5);  // Source register 1 index for forwarding matches.
-    wire rs2        of bit(5);  // Source register 2 index for forwarding matches.
-    wire rd         of bit(5);  // Destination register index.
-    wire reg_wr     of bit(1);  // Enables register-file writeback when set.
-    wire branch     of bit(3);  // Encoded branch/jump mode used by BRANCH_COND.
-    wire mem_to_reg of bit(1);  // Selects memory result for WB.
-    wire mem_wr     of bit(1);  // Enables data-memory write in MEM stage.
-    wire mem_op     of bit(3);  // Width/sign mode for memory access.
-    wire a_src      of bit(1);  // Selects ALU A input: register vs PC.
-    wire b_src      of bit(2);  // Selects ALU B input mux mode.
-    wire alu_ctl    of bit(4);  // ALU operation selector.
+interface ID_EX_PIPE : [valid, pc, pred_taken, pred_target, ra, rb, imm, rs1, rs2, rd, reg_wr, branch, mem_to_reg, mem_wr, mem_op, a_src, b_src, alu_ctl] {
+    wire valid       of bit(1);  // Marks ID/EX entry as valid work for EX stage.
+    wire pc          of bit(32); // Instruction PC carried into EX.
+    wire pred_taken  of bit(1);  // Predictor's taken/not-taken decision captured in ID.
+    wire pred_target of bit(32); // Predictor target captured in ID for EX validation.
+    wire ra          of bit(32); // Decoded/bypassed source operand A value.
+    wire rb          of bit(32); // Decoded/bypassed source operand B value.
+    wire imm         of bit(32); // Decoded immediate value.
+    wire rs1         of bit(5);  // Source register 1 index for forwarding matches.
+    wire rs2         of bit(5);  // Source register 2 index for forwarding matches.
+    wire rd          of bit(5);  // Destination register index.
+    wire reg_wr      of bit(1);  // Enables register-file writeback when set.
+    wire branch      of bit(3);  // Encoded branch/jump mode used by BRANCH_COND.
+    wire mem_to_reg  of bit(1);  // Selects memory result for WB.
+    wire mem_wr      of bit(1);  // Enables data-memory write in MEM stage.
+    wire mem_op      of bit(3);  // Width/sign mode for memory access.
+    wire a_src       of bit(1);  // Selects ALU A input: register vs PC.
+    wire b_src       of bit(2);  // Selects ALU B input mux mode.
+    wire alu_ctl     of bit(4);  // ALU operation selector.
 }
 
 /**
@@ -336,15 +358,16 @@ component INSTR_DECODER : [op_i, func3, func7] -> [ctl] {
     bundle ctl of CTL_SIGNAL_SET;
 
     auto op <> op_i[6:2];
-    auto U_flag_0 <> EQ <> [op, 5'b01101]; // lui
-    auto U_flag_1 <> EQ <> [op, 5'b00101]; // auipc
-    auto I_flag_0 <> EQ <> [op, 5'b00100]; // addi, slti, sltiu, xori, ori, andi, slli, srli, srai
-    auto R_flag   <> EQ <> [op, 5'b01100]; // add, sub, sll, slt, sltu, xor, srl, sra, or, and
-    auto J_flag   <> EQ <> [op, 5'b11011]; // jal
-    auto I_flag_1 <> EQ <> [op, 5'b11001]; // jalr
-    auto B_flag   <> EQ <> [op, 5'b11000]; // beq, bne, blt, bge, bltu, bgeu
-    auto I_flag_2 <> EQ <> [op, 5'b00000]; // lb, lh, lw, lbu, lhu
-    auto S_flag   <> EQ <> [op, 5'b01000]; // sb, sh, sw
+    auto opcode_valid_low <> AND(2) <> [op_i[0], op_i[1]];
+    auto U_flag_0 <> AND <> [opcode_valid_low, EQ <> [op, 5'b01101]]; // lui
+    auto U_flag_1 <> AND <> [opcode_valid_low, EQ <> [op, 5'b00101]]; // auipc
+    auto I_flag_0 <> AND <> [opcode_valid_low, EQ <> [op, 5'b00100]]; // addi, slti, sltiu, xori, ori, andi, slli, srli, srai
+    auto R_flag   <> AND <> [opcode_valid_low, EQ <> [op, 5'b01100]]; // add, sub, sll, slt, sltu, xor, srl, sra, or, and
+    auto J_flag   <> AND <> [opcode_valid_low, EQ <> [op, 5'b11011]]; // jal
+    auto I_flag_1 <> AND <> [opcode_valid_low, EQ <> [op, 5'b11001]]; // jalr
+    auto B_flag   <> AND <> [opcode_valid_low, EQ <> [op, 5'b11000]]; // beq, bne, blt, bge, bltu, bgeu
+    auto I_flag_2 <> AND <> [opcode_valid_low, EQ <> [op, 5'b00000]]; // lb, lh, lw, lbu, lhu
+    auto S_flag   <> AND <> [opcode_valid_low, EQ <> [op, 5'b01000]]; // sb, sh, sw
 
     auto U_flag <> OR <> [U_flag_0, U_flag_1];
     auto I_flag <> OR(3) <> [I_flag_0, I_flag_1, I_flag_2];
@@ -432,43 +455,4 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
         case[3'b100] : immJ,
         default : 32'b0
     };
-}
-
-/**
-  * Branch Condition Evaluator
-  * This component takes the branch type and the results of comparisons from the EX stage and determines if a branch is taken.
-  * It outputs control signals for the PC source muxes to select between sequential execution, predicted targets, or resolved targets.
-*/
-component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
-    wire branch         of bit(3);
-    wire zero, less     of bit(1);
-    wire PCAsrc, PCBsrc of bit(1);
-
-    [PCAsrc, PCBsrc] <> SPLIT(2) <> MUX(3) <> {
-        sel : branch,
-        case[3'b000] : 2'b00,
-        case[3'b001] : 2'b10,
-        case[3'b010] : 2'b11,
-        case[3'b100] : CONCAT <> [zero, 1'b0],
-        case[3'b101] : CONCAT <> [NOT <> zero, 1'b0],
-        case[3'b110] : CONCAT <> [less, 1'b0],
-        case[3'b111] : CONCAT <> [NOT <> less, 1'b0],
-        default : 2'b00
-    };
-}
-
-/**
-  * Branch Predictor
-  * This simple predictor assumes that all direct jumps (JAL) are taken and uses the immediate as the target.
-  * It does not attempt to predict conditional branches, which will be resolved in the EX stage.
-*/
-component BRANCH_PREDICTOR : [valid, branch, pc, imm] -> [pred_taken, pred_target] {
-    wire valid       of bit(1);
-    wire branch      of bit(3);
-    wire pc, imm     of bit(32);
-    wire pred_taken  of bit(1);
-    wire pred_target of bit(32);
-
-    pred_taken <> AND <> [valid, EQ <> [branch, 3'b001]];
-    pred_target <> ADD <> [pc, imm];
 }

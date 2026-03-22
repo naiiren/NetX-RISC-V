@@ -19,7 +19,7 @@ int main(void)
 
     for (i = 0; i < 29; i++) {
         if (arr[i] > arr[i + 1])
-            return 0;
+            return 0xdeadbeef;
     }
 
     return 0x00c0ffee;

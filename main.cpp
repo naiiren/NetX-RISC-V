@@ -284,10 +284,16 @@ int main(int argc, char *argv[]) {
                 if (enable_trace) {
                     std::cout << " | IFID(pc=" << hex32(ctx.get("ifid.pc")) << ", instr=" << hex32(ctx.get("ifid.instr"))
                               << ", v=" << static_cast<unsigned>(ctx.get("ifid.valid")) << ")"
-                              << " IDEX(pc=" << hex32(ctx.get("idex.pc")) << ", rd=" << static_cast<unsigned>(ctx.get("idex.rd"))
+                              << " IDEX(v=" << static_cast<unsigned>(ctx.get("idex.valid"))
+                              << ", pc=" << hex32(ctx.get("idex.pc")) << ", br=" << static_cast<unsigned>(ctx.get("idex.branch"))
+                              << ", pt=" << static_cast<unsigned>(ctx.get("idex.pred_taken"))
+                              << ", rd=" << static_cast<unsigned>(ctx.get("idex.rd"))
                               << ", rs1=" << static_cast<unsigned>(ctx.get("idex.rs1")) << ", rs2=" << static_cast<unsigned>(ctx.get("idex.rs2"))
                               << ", ra=" << hex32(ctx.get("idex.ra")) << ", rb=" << hex32(ctx.get("idex.rb")) << ")"
                               << " EX(res=" << hex32(ctx.get("ex_result")) << ", tgt=" << hex32(ctx.get("ex_branch_target"))
+                              << ", take=" << static_cast<unsigned>(ctx.get("ex_actual_taken"))
+                              << ", a=" << static_cast<unsigned>(ctx.get("ex_pc_a_src"))
+                              << ", b=" << static_cast<unsigned>(ctx.get("ex_pc_b_src"))
                               << ", redir=" << static_cast<unsigned>(ctx.get("ex_redirect")) << ")"
                               << " EXMEM(rd=" << static_cast<unsigned>(ctx.get("exmem.rd")) << ", res=" << hex32(ctx.get("exmem.result"))
                               << ", store=" << hex32(ctx.get("exmem.store_data")) << ")"

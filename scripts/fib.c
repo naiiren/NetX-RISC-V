@@ -13,7 +13,7 @@ int main() {
 
     for (int i = 2; i < 10; ++i) {
         if (arr[i] != arr[i - 1] + arr[i - 2]) {
-            return 0xdeadbeed;
+            return 0xdeadbeef;
         }
     }
     return 0x00c0ffee;

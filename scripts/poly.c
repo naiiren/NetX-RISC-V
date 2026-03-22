@@ -31,5 +31,5 @@ int main(void)
         return 0x00c0ffee;
     }
 
-    return 0;
+    return 0xdeadbeef;
 }

@@ -1,0 +1,121 @@
+application rv32i;
+
+/**
+  * Branch Condition Evaluator
+  * This component takes the branch type and the results of comparisons from the EX stage and determines if a branch is taken.
+  * It outputs control signals for the PC source muxes to select between sequential execution, predicted targets, or resolved targets.
+*/
+component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
+    wire branch         of bit(3);
+    wire zero, less     of bit(1);
+    wire PCAsrc, PCBsrc of bit(1);
+
+    [PCAsrc, PCBsrc] <> SPLIT(2) <> MUX(3) <> {
+        sel : branch,
+        case[3'b000] : 2'b00,
+        case[3'b001] : 2'b10,
+        case[3'b010] : 2'b11,
+        case[3'b100] : CONCAT <> [zero, 1'b0],
+        case[3'b101] : CONCAT <> [NOT <> zero, 1'b0],
+        case[3'b110] : CONCAT <> [less, 1'b0],
+        case[3'b111] : CONCAT <> [NOT <> less, 1'b0],
+        default : 2'b00
+    };
+}
+
+/**
+  * Branch Predictor
+  * Branch predictor with a tiny BTB and 2-bit saturating counters.
+  * Direct JAL is predicted taken in decode. Conditional branches use BTB state.
+  * JALR remains EX-resolved.
+*/
+component BRANCH_PREDICTOR : [
+    clk, rst, valid, branch, pc, imm,
+    update_valid, update_branch, update_pc, update_taken, update_target
+] -> [pred_taken, pred_target] {
+    wire clk            of clock(); // Predictor state update clock.
+    wire rst            of bit(1);  // Synchronous reset for BTB entries and counters.
+    wire valid          of bit(1);  // Marks the decode-stage query as a real instruction.
+    wire branch         of bit(3);  // Encoded control-flow kind from the decoder.
+    wire pc             of bit(32); // PC of the instruction being queried.
+    wire imm            of bit(32); // Decoded immediate used for direct JAL targets.
+    wire update_valid   of bit(1);  // EX-stage result is valid and may train the predictor.
+    wire update_branch  of bit(3);  // Resolved control-flow kind from EX.
+    wire update_pc      of bit(32); // PC of the resolved branch/jump used to index the BTB.
+    wire update_taken   of bit(1);  // Actual taken/not-taken outcome from EX.
+    wire update_target  of bit(32); // Actual next PC when the resolved control flow is taken.
+
+    wire pred_taken     of bit(1);  // Predictor decision for the decode-stage instruction.
+    wire pred_target    of bit(32); // Predicted target PC when pred_taken is asserted.
+
+    let reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+
+    // 4-entry direct-mapped BTB (index = pc[3:2], tag = pc[31:4]).
+    wire btb_valid[4]  of bit(1);
+    wire btb_tag[4]    of bit(28);
+    wire btb_target[4] of bit(32);
+    wire btb_ctr[4]    of bit(2);
+
+    auto q_idx <> pc[3:2];
+    auto q_tag <> pc[31:4];
+
+    let accessor(arr) = MUX(2) <> [q_idx] ++ [arr[i] | i in [0..4]];
+    auto q_valid        <> accessor(btb_valid);
+    auto q_entry_tag    <> accessor(btb_tag);
+    auto q_entry_target <> accessor(btb_target);
+    auto q_entry_ctr    <> accessor(btb_ctr);
+
+    auto q_hit <> AND(2) <> [q_valid, EQ <> [q_entry_tag, q_tag]];
+    auto q_ctr_taken <> q_entry_ctr[1];
+
+    auto q_is_jal <> EQ <> [branch, 3'b001];
+    auto q_is_cond <> branch[2];
+    auto q_btb_predictable <> q_is_cond;
+    auto q_jal_target <> ADD <> [pc, imm];
+    pred_taken <> OR <> [
+        AND(2) <> [valid, q_is_jal],
+        AND(4) <> [valid, q_btb_predictable, q_hit, q_ctr_taken]
+    ];
+    pred_target <> MUX(1) <> [q_is_jal, q_entry_target, q_jal_target];
+
+    auto u_idx <> update_pc[3:2];
+    auto u_tag <> update_pc[31:4];
+    auto u_is_control <> OR <> [update_branch[i] | i in [0..3]];
+    auto u_en <> AND(2) <> [update_valid, u_is_control];
+
+    let ctr_inc(ctr) = MUX(2) <> {
+        sel : ctr,
+        case[2'b00] : 2'b01,
+        case[2'b01] : 2'b10,
+        case[2'b10] : 2'b11,
+        case[2'b11] : 2'b11
+    };
+    let ctr_dec(ctr) = MUX(2) <> {
+        sel : ctr,
+        case[2'b00] : 2'b00,
+        case[2'b01] : 2'b00,
+        case[2'b10] : 2'b01,
+        case[2'b11] : 2'b10
+    };
+
+    wire u_we[4] of bit(1);
+    wire u_hit[4] of bit(1);
+    wire u_ctr_next[4] of bit(2);
+    for i in [0..4] {
+        u_we[i] <> AND(2) <> [u_en, EQ <> [u_idx, i[1:0]]];
+        u_hit[i] <> AND(2) <> [btb_valid[i], EQ <> [btb_tag[i], u_tag]];
+        u_ctr_next[i] <> MUX(1) <> [
+            u_hit[i],
+            MUX(1) <> [
+                update_taken,
+                ctr_dec(btb_ctr[i]),
+                ctr_inc(btb_ctr[i])
+            ],
+            MUX(1) <> [update_taken, 2'b01, 2'b10]
+        ];
+        btb_valid[i]  <> reg(1'b0)  <> MUX(1) <> [u_we[i], btb_valid[i], 1'b1];
+        btb_ctr[i]    <> reg(2'b01) <> MUX(1) <> [u_we[i], btb_ctr[i], u_ctr_next[i]];
+        btb_tag[i]    <> reg(28'd0) <> MUX(1) <> [u_we[i], btb_tag[i], u_tag];
+        btb_target[i] <> reg(32'd0) <> MUX(1) <> [u_we[i], btb_target[i], update_target];
+    }
+}
