@@ -195,18 +195,23 @@ int main(int argc, char *argv[]) {
     bool enable_native = true;
     bool enable_trace = false;
     std::vector<std::string> test_dirs;
+    std::vector<std::string> test_files;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--no-native") {
+        const std::string arg = argv[i];
+        if (arg == "--no-native") {
             enable_native = false;
         }
-        if (std::string(argv[i]) == "--trace") {
+        if (arg == "--trace") {
             enable_trace = true;
         }
-        if (std::string(argv[i]) == "--dir" && i + 1 < argc) {
+        if (arg == "--dir" && i + 1 < argc) {
             test_dirs.push_back(argv[++i]);
         }
+        if (arg == "--file" && i + 1 < argc) {
+            test_files.push_back(argv[++i]);
+        }
     }
-    if (test_dirs.empty()) {
+    if (test_dirs.empty() && test_files.empty()) {
         test_dirs.push_back("testcases");
     }
     
@@ -229,8 +234,103 @@ int main(int argc, char *argv[]) {
         return oss.str();
     };
 
+    auto run_file = [&](const std::filesystem::path &input_path, int max_cycles = 100000) {
+        std::filesystem::path file_path = input_path;
+        if (!file_path.is_absolute()) {
+            file_path = std::filesystem::current_path() / file_path;
+        }
+
+        if (!std::filesystem::exists(file_path)) {
+            std::cerr << "Warning: test file not found: " << input_path << "\n";
+            return;
+        }
+        if (file_path.extension() != ".hex") {
+            std::cerr << "Warning: test file must be a .hex file: " << input_path << "\n";
+            return;
+        }
+
+        total++;
+        std::cout << "Running test case: " << file_path.filename();
+
+        const auto data_path = file_path.parent_path() / file_path.stem();
+        const auto instr_mem = new Memory(std::ifstream(file_path));
+        const auto data_mem  = new Memory(std::ifstream(data_path.string() + ".data"));
+
+        ctx.stashed_flip("clk");
+        ctx.stashed_set("rst", value_t{1, 1});
+        ctx.apply_stash();
+        ctx.stashed_flip("clk");
+        ctx.apply_stash();
+        ctx.stashed_flip("clk");
+        ctx.apply_stash();
+
+        ctx.stashed_set("rst", value_t{1, 0});
+        ctx.apply_stash();
+
+        bool seen_magic = false;
+        bool finished = false;
+        int drain_cycles = 0;
+        for (int i = 0; i != max_cycles; ++i) {
+            const auto fetch_pc = ctx.get("imem_addr");
+            const auto instr = instr_mem->read_word(fetch_pc);
+            ctx.stashed_flip("clk");
+
+            if (enable_trace) {
+                std::cout << std::endl
+                          << "Cycle " << std::setw(5) << i << ": " << std::hex
+                          << "PC = 0x"          << std::setw(5) << std::setfill('0') << static_cast<unsigned>(fetch_pc) << ", "
+                          << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr) << ", "
+                          << "x10 = 0x"         << std::setw(8) << std::setfill('0') << static_cast<unsigned>(ctx.get("x10"))
+                          << std::dec;
+            }
+
+            ctx.stashed_set("instr", instr);
+            ctx.apply_stash();
+
+            auto d_mem_op   = ctx.get("dmem_op");
+            auto d_mem_addr = ctx.get("dmem_addr");
+            if (ctx.get("dmem_wr") == high) {
+                auto d_mem_in = ctx.get("dmem_in");
+                data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
+            }
+
+            if (!seen_magic &&
+                ctx.get("ifid.valid") == high &&
+                ctx.get("ifid.instr") == magic_instr) {
+                seen_magic = true;
+                drain_cycles = 128;
+            }
+
+            if (seen_magic && drain_cycles == 0) {
+                if (static_cast<unsigned>(ctx.get("x10")) == 0x00c0ffee) {
+                    std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
+                    passed++;
+                } else {
+                    std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
+                }
+                finished = true;
+                break;
+            }
+
+            if (seen_magic) {
+                drain_cycles--;
+            }
+
+            ctx.stashed_flip("clk");
+            ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.apply_stash();
+        }
+
+        if (!finished) {
+            std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
+        }
+
+        delete instr_mem;
+        delete data_mem;
+    };
+
     // Run all .hex test cases found in a directory.
-    auto run_dir = [&](const std::string& dir_name, int max_cycles = 40000) {
+    auto run_dir = [&](const std::string& dir_name, int max_cycles = 100000) {
         std::filesystem::path dir = std::filesystem::current_path() / dir_name;
         if (!std::filesystem::is_directory(dir)) {
             std::cerr << "Warning: test directory not found: " << dir_name << "\n";
@@ -239,114 +339,21 @@ int main(int argc, char *argv[]) {
         std::cout << "\n=== Running tests from '" << dir_name << "' ===\n";
 
         for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-            std::filesystem::path file_path = entry.path();
+            const std::filesystem::path file_path = entry.path();
 
             if (file_path.extension() == ".data") continue;
             if (file_path.extension() != ".hex")  continue;
             if (file_path.filename() == "fence_i.hex") continue;
 
-            total++;
-            std::cout << "Running test case: " << file_path.filename();
-
-            const auto instr_mem = new Memory(std::ifstream(file_path));
-            const auto data_mem  = new Memory(std::ifstream(file_path.replace_extension(".data")));
-
-            ctx.stashed_flip("clk");
-            ctx.stashed_set("rst", value_t{1, 1});
-            ctx.apply_stash();
-            ctx.stashed_flip("clk");
-            ctx.apply_stash();
-            ctx.stashed_flip("clk");
-            ctx.apply_stash();
-
-            ctx.stashed_set("rst", value_t{1, 0});
-            ctx.apply_stash();
-
-            bool seen_magic = false;
-            bool finished = false;
-            int drain_cycles = 0;
-            for (int i = 0; i != max_cycles; ++i) {
-                const auto fetch_pc = ctx.get("imem_addr");
-                const auto instr = instr_mem->read_word(fetch_pc);
-                ctx.stashed_flip("clk");
-
-                if (enable_trace) {
-                    std::cout << "Cycle " << std::setw(5) << i << ": " << std::hex
-                              << "PC = 0x"          << std::setw(5) << std::setfill('0') << static_cast<unsigned>(fetch_pc) << ", "
-                              << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr)    << std::dec;
-                }
-
-                ctx.stashed_set("instr", instr);
-                ctx.apply_stash();
-
-                auto d_mem_op   = ctx.get("dmem_op");
-                auto d_mem_addr = ctx.get("dmem_addr");
-                if (enable_trace) {
-                    std::cout << " | IFID(pc=" << hex32(ctx.get("ifid.pc")) << ", instr=" << hex32(ctx.get("ifid.instr"))
-                              << ", v=" << static_cast<unsigned>(ctx.get("ifid.valid")) << ")"
-                              << " IDEX(v=" << static_cast<unsigned>(ctx.get("idex.valid"))
-                              << ", pc=" << hex32(ctx.get("idex.pc")) << ", br=" << static_cast<unsigned>(ctx.get("idex.branch"))
-                              << ", pt=" << static_cast<unsigned>(ctx.get("idex.pred_taken"))
-                              << ", rd=" << static_cast<unsigned>(ctx.get("idex.rd"))
-                              << ", rs1=" << static_cast<unsigned>(ctx.get("idex.rs1")) << ", rs2=" << static_cast<unsigned>(ctx.get("idex.rs2"))
-                              << ", ra=" << hex32(ctx.get("idex.ra")) << ", rb=" << hex32(ctx.get("idex.rb")) << ")"
-                              << " EX(res=" << hex32(ctx.get("ex_result")) << ", tgt=" << hex32(ctx.get("ex_branch_target"))
-                              << ", take=" << static_cast<unsigned>(ctx.get("ex_actual_taken"))
-                              << ", a=" << static_cast<unsigned>(ctx.get("ex_pc_a_src"))
-                              << ", b=" << static_cast<unsigned>(ctx.get("ex_pc_b_src"))
-                              << ", redir=" << static_cast<unsigned>(ctx.get("ex_redirect")) << ")"
-                              << " EXMEM(rd=" << static_cast<unsigned>(ctx.get("exmem.rd")) << ", res=" << hex32(ctx.get("exmem.result"))
-                              << ", store=" << hex32(ctx.get("exmem.store_data")) << ")"
-                              << " MEMWB(rd=" << static_cast<unsigned>(ctx.get("memwb.rd")) << ", res=" << hex32(ctx.get("memwb.result"))
-                              << ", mem=" << hex32(ctx.get("memwb.mem_data")) << ")"
-                              << " DMEM(addr=" << hex32(d_mem_addr) << ", in=" << hex32(ctx.get("dmem_in"))
-                              << ", op=" << static_cast<unsigned>(d_mem_op) << ", wr=" << static_cast<unsigned>(ctx.get("dmem_wr")) << ")"
-                              << std::endl;
-                }
-                if (ctx.get("dmem_wr") == high) {
-                    auto d_mem_in = ctx.get("dmem_in");
-                    data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
-                }
-
-                if (!seen_magic &&
-                    ctx.get("ifid.valid") == high &&
-                    ctx.get("ifid.instr") == magic_instr) {
-                    seen_magic = true;
-                    drain_cycles = 128;
-                }
-
-                if (seen_magic && drain_cycles == 0) {
-                    if (static_cast<unsigned>(ctx.get("data[10]")) == 0x00c0ffee) {
-                        std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
-                        passed++;
-                    } else {
-                        std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
-                    }
-                    finished = true;
-                    break;
-                }
-
-                if (seen_magic) {
-                    drain_cycles--;
-                }
-
-                ctx.stashed_flip("clk");
-                ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
-                ctx.apply_stash();
-            }
-
-            if (!finished) {
-                std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
-            }
-
-            delete instr_mem;
-            delete data_mem;
+            run_file(file_path, max_cycles);
         }
     };
 
-
     for (const auto& d : test_dirs) {
         run_dir(d);
+    }
+    for (const auto& f : test_files) {
+        run_file(f);
     }
 
     std::print("\nPassed {}/{} test cases\n", passed, total);

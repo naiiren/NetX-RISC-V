@@ -10,7 +10,7 @@ int mult(int x, int y) {
     return result;
 }
 
-int main(void)
+int main()
 {
     int poly[9];
     for (int i = 0; i < 9; i++) {
@@ -28,8 +28,8 @@ int main(void)
     }
 
     if (result == 987654321) {
-        return 0x00c0ffee;
+        return 0x00C0FFEE;
     }
 
-    return 0xdeadbeef;
+    return 0xDEADBEEF;
 }

@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system name="$${FILENAME}">
+ <component
+   name="$${FILENAME}"
+   displayName="$${FILENAME}"
+   version="1.0"
+   description=""
+   tags="INTERNAL_COMPONENT=true"
+   categories="" />
+ <parameter name="bonusData"><![CDATA[bonusData 
+{
+   element alt_mem_if_civ_ddr2_emif_0
+   {
+      datum _sortIndex
+      {
+         value = "0";
+         type = "int";
+      }
+   }
+}
+]]></parameter>
+ <parameter name="clockCrossingAdapter" value="HANDSHAKE" />
+ <parameter name="device" value="EP4CE115F29C7" />
+ <parameter name="deviceFamily" value="Cyclone IV E" />
+ <parameter name="deviceSpeedGrade" value="7" />
+ <parameter name="fabricMode" value="QSYS" />
+ <parameter name="generateLegacySim" value="false" />
+ <parameter name="generationId" value="0" />
+ <parameter name="globalResetBus" value="false" />
+ <parameter name="hdlLanguage" value="VERILOG" />
+ <parameter name="hideFromIPCatalog" value="true" />
+ <parameter name="lockedInterfaceDefinition" value="" />
+ <parameter name="maxAdditionalLatency" value="1" />
+ <parameter name="projectName" value="" />
+ <parameter name="sopcBorderPoints" value="false" />
+ <parameter name="systemHash" value="0" />
+ <parameter name="testBenchDutName" value="" />
+ <parameter name="timeStamp" value="0" />
+ <parameter name="useTestBenchNamingPattern" value="false" />
+ <instanceScript></instanceScript>
+ <interface
+   name="aux_full_rate_clk"
+   internal="alt_mem_if_civ_ddr2_emif_0.aux_full_rate_clk"
+   type="clock"
+   dir="start">
+  <port name="aux_full_rate_clk" internal="aux_full_rate_clk" />
+ </interface>
+ <interface
+   name="aux_half_rate_clk"
+   internal="alt_mem_if_civ_ddr2_emif_0.aux_half_rate_clk"
+   type="clock"
+   dir="start">
+  <port name="aux_half_rate_clk" internal="aux_half_rate_clk" />
+ </interface>
+ <interface
+   name="avl"
+   internal="alt_mem_if_civ_ddr2_emif_0.avl"
+   type="conduit"
+   dir="end">
+  <port name="local_ready" internal="local_ready" />
+  <port name="local_write_req" internal="local_write_req" />
+  <port name="local_read_req" internal="local_read_req" />
+  <port name="local_address" internal="local_address" />
+  <port name="local_be" internal="local_be" />
+  <port name="local_wdata" internal="local_wdata" />
+  <port name="local_size" internal="local_size" />
+  <port name="local_burstbegin" internal="local_burstbegin" />
+  <port name="local_rdata" internal="local_rdata" />
+  <port name="local_rdata_valid" internal="local_rdata_valid" />
+ </interface>
+ <interface
+   name="global_reset"
+   internal="alt_mem_if_civ_ddr2_emif_0.global_reset"
+   type="reset"
+   dir="end">
+  <port name="global_reset_n" internal="global_reset_n" />
+ </interface>
+ <interface
+   name="mem"
+   internal="alt_mem_if_civ_ddr2_emif_0.mem"
+   type="conduit"
+   dir="end">
+  <port name="mem_addr" internal="mem_addr" />
+  <port name="mem_ba" internal="mem_ba" />
+  <port name="mem_cas_n" internal="mem_cas_n" />
+  <port name="mem_cke" internal="mem_cke" />
+  <port name="mem_clk" internal="mem_clk" />
+  <port name="mem_clk_n" internal="mem_clk_n" />
+  <port name="mem_cs_n" internal="mem_cs_n" />
+  <port name="mem_dm" internal="mem_dm" />
+  <port name="mem_dq" internal="mem_dq" />
+  <port name="mem_dqs" internal="mem_dqs" />
+  <port name="mem_dqs_n" internal="mem_dqs_n" />
+  <port name="mem_odt" internal="mem_odt" />
+  <port name="mem_ras_n" internal="mem_ras_n" />
+  <port name="mem_we_n" internal="mem_we_n" />
+ </interface>
+ <interface
+   name="phy_clk"
+   internal="alt_mem_if_civ_ddr2_emif_0.phy_clk"
+   type="clock"
+   dir="start">
+  <port name="phy_clk" internal="phy_clk" />
+ </interface>
+ <interface
+   name="phy_reset"
+   internal="alt_mem_if_civ_ddr2_emif_0.phy_reset"
+   type="reset"
+   dir="start">
+  <port name="reset_phy_clk_n" internal="reset_phy_clk_n" />
+ </interface>
+ <interface
+   name="pll_ref_clk"
+   internal="alt_mem_if_civ_ddr2_emif_0.pll_ref_clk"
+   type="clock"
+   dir="end">
+  <port name="pll_ref_clk" internal="pll_ref_clk" />
+ </interface>
+ <interface
+   name="reset_request"
+   internal="alt_mem_if_civ_ddr2_emif_0.reset_request"
+   type="reset"
+   dir="start">
+  <port name="reset_request_n" internal="reset_request_n" />
+ </interface>
+ <interface
+   name="status"
+   internal="alt_mem_if_civ_ddr2_emif_0.status"
+   type="conduit"
+   dir="end">
+  <port name="status_cal_fail" internal="status_cal_fail" />
+  <port name="status_cal_success" internal="status_cal_success" />
+  <port name="status_init_done" internal="status_init_done" />
+ </interface>
+ <module
+   name="alt_mem_if_civ_ddr2_emif_0"
+   kind="alt_mem_if_civ_ddr2_emif"
+   version="1.0.0"
+   enabled="1"
+   autoexport="1">
+  <parameter name="ALT_MEM_IF_DEVICE_FAMILY" value="Cyclone IV GX" />
+  <parameter name="ALT_MEM_IF_ENABLE_DEBUG_INTERFACE" value="false" />
+  <parameter name="ALT_MEM_IF_ENABLE_LOCAL_CTRL_INTERFACE" value="false" />
+  <parameter name="ALT_MEM_IF_ENABLE_SOFT_RESET_INTERFACE" value="false" />
+  <parameter name="ALT_MEM_IF_MEM_CLK_FREQ" value="200.0" />
+  <parameter name="ALT_MEM_IF_PLL_REFCLK_FREQ" value="100.0" />
+  <parameter name="ALT_MEM_IF_SPEED_GRADE" value="6" />
+  <parameter name="AUTO_DEVICE_SPEEDGRADE" value="7" />
+  <parameter name="CTL_AUTO_POWER_DOWN_CYCLES" value="0" />
+  <parameter name="CTL_COMMAND_QUEUE_LOOK_AHEAD_DEPTH" value="4" />
+  <parameter name="CTL_DATA_RATE" value="Full" />
+  <parameter name="CTL_ENABLE_AUTO_ECC" value="false" />
+  <parameter name="CTL_ENABLE_AUTO_POWER_DOWN" value="false" />
+  <parameter name="CTL_ENABLE_AUTO_PRECHARGE_CONTROL" value="false" />
+  <parameter name="CTL_ENABLE_AUTO_REFRESH_CONTROLS" value="false" />
+  <parameter name="CTL_ENABLE_CONFIG_STATUS_INTERFACE" value="false" />
+  <parameter name="CTL_ENABLE_ECC_LOGIC" value="false" />
+  <parameter name="CTL_ENABLE_REORDERING" value="true" />
+  <parameter name="CTL_ENABLE_SELF_REFRESH_CONTROLS" value="false" />
+  <parameter name="CTL_LOCAL_MAXIMUM_BURST_COUNT" value="4" />
+  <parameter name="CTL_LOCAL_TO_MEMORY_ADDRESS_MAPPING" value="CHIP-ROW-BANK-COL" />
+  <parameter name="CTL_REORDERING_STARVATION_LIMIT" value="10" />
+  <parameter name="EX_DESIGN_GEN_SIM" value="true" />
+  <parameter name="EX_DESIGN_GEN_SYNTH" value="true" />
+  <parameter name="EX_DESIGN_HDL_FORMAT" value="Verilog" />
+  <parameter name="EX_DESIGN_SEL_DESIGN">AltMemPHY Example Design</parameter>
+  <parameter name="MEM_ACTIVE_TO_PRECHARGE_TIME" value="40.0" />
+  <parameter name="MEM_ACTIVE_TO_READ_WRITE_TIME" value="15.0" />
+  <parameter name="MEM_ADDITIVE_CAS_LATENCY" value="Disabled" />
+  <parameter name="MEM_ADDR_COMMAND_INPUT_HOLD_TIME" value="600" />
+  <parameter name="MEM_ADDR_COMMAND_INPUT_SETUP_TIME" value="600" />
+  <parameter name="MEM_AUTO_REFRESH_COMMAND_INTERVAL" value="75.0" />
+  <parameter name="MEM_BANK_ADDR_WIDTH" value="2" />
+  <parameter name="MEM_BURST_LENGTH" value="4" />
+  <parameter name="MEM_BURST_ORDERING" value="Sequential" />
+  <parameter name="MEM_CAS_3_MAX_FREQ" value="200.0" />
+  <parameter name="MEM_CAS_4_MAX_FREQ" value="200.0" />
+  <parameter name="MEM_CAS_5_MAX_FREQ" value="200.0" />
+  <parameter name="MEM_CAS_6_MAX_FREQ" value="200.0" />
+  <parameter name="MEM_CAS_LATENCY" value="3" />
+  <parameter name="MEM_CHIP_SELECTS_PER_DIMM" value="1" />
+  <parameter name="MEM_COLUMN_ADDR_WIDTH" value="10" />
+  <parameter name="MEM_DQS_DQ_SKEW" value="400" />
+  <parameter name="MEM_DQS_FALLING_EDGE_HOLD_TIME_FROM_CK" value="0.2" />
+  <parameter name="MEM_DQS_FALLING_EDGE_TO_CK_SETUP_TIME" value="0.2" />
+  <parameter name="MEM_DQS_OUTPUT_ACCESS_TIME_FROM_CK" value="500" />
+  <parameter name="MEM_DQ_DM_INPUT_HOLD_TIME_TO_DQS" value="400" />
+  <parameter name="MEM_DQ_DM_INPUT_SETUP_TIME_TO_DQS" value="400" />
+  <parameter name="MEM_DQ_HOLD_SKEW_FACTOR" value="450" />
+  <parameter name="MEM_DQ_OUTPUT_ACCESS_TIME_FROM_CK" value="600" />
+  <parameter name="MEM_DQ_PER_DQS" value="8" />
+  <parameter name="MEM_DRIVE_DM_PINS_FROM_FPGA" value="true" />
+  <parameter name="MEM_DRIVE_STRENGTH" value="Normal" />
+  <parameter name="MEM_ENABLE_DEVICE_DLL" value="true" />
+  <parameter name="MEM_FIRST_DQS_EDGE_TO_ASSOC_CLOCK_EDGE" value="0.25" />
+  <parameter name="MEM_FORMAT" value="Discrete Device" />
+  <parameter name="MEM_FOUR_WINDOW_TIME" value="37.5" />
+  <parameter name="MEM_LOAD_MODE_REGISTER_COMMAND_PERIOD" value="10.0" />
+  <parameter name="MEM_MAX_MEM_FREQ" value="200.0" />
+  <parameter name="MEM_MEM_INIT_TIME_AT_POWER_UP" value="200.0" />
+  <parameter name="MEM_NUM_CHIP_SELECTS" value="1" />
+  <parameter name="MEM_NUM_CLOCK_PAIRS" value="1" />
+  <parameter name="MEM_ODT_SETTING" value="Disabled" />
+  <parameter name="MEM_PRECHARGE_ADDR_BIT" value="10" />
+  <parameter name="MEM_PRECHARGE_COMMAND_PERIOD" value="15.0" />
+  <parameter name="MEM_RAS_TO_RAS_DELAY" value="7.5" />
+  <parameter name="MEM_READ_TO_PRECHARGE_TIME" value="7.5" />
+  <parameter name="MEM_REFRESH_COMMAND_INTERVAL" value="7.0" />
+  <parameter name="MEM_ROW_ADDR_WIDTH" value="13" />
+  <parameter name="MEM_TOTAL_DQ_WIDTH" value="8" />
+  <parameter name="MEM_VENDOR" value="JEDEC" />
+  <parameter name="MEM_WRITE_RECOVERY_TIME" value="15.0" />
+  <parameter name="MEM_WRITE_TO_READ_PERIOD" value="2" />
+  <parameter name="PHY_ADDR_CMD_CLOCK_PHASE" value="90" />
+  <parameter name="PHY_CALIBRATION_TYPE_FOR_SIMULATION" value="Quick Calibration" />
+  <parameter name="SYS_INFO_DEVICE" value="EP4CE115F29C7" />
+  <parameter name="SYS_INFO_DEVICE_FAMILY" value="Cyclone IV E" />
+ </module>
+ <interconnectRequirement for="$system" name="qsys_mm.clockCrossingAdapter" value="HANDSHAKE" />
+ <interconnectRequirement for="$system" name="qsys_mm.enableEccProtection" value="FALSE" />
+ <interconnectRequirement for="$system" name="qsys_mm.insertDefaultSlave" value="FALSE" />
+ <interconnectRequirement for="$system" name="qsys_mm.maxAdditionalLatency" value="1" />
+</system>

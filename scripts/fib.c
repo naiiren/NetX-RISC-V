@@ -6,12 +6,12 @@ int fib(int n) {
 }
 
 int main() {
-    int arr[10];
-    for (int i = 0; i < 10; ++i) {
+    int arr[12];
+    for (int i = 0; i < 12; ++i) {
         arr[i] = fib(i);
     }
 
-    for (int i = 2; i < 10; ++i) {
+    for (int i = 2; i < 12; ++i) {
         if (arr[i] != arr[i - 1] + arr[i - 2]) {
             return 0xdeadbeef;
         }

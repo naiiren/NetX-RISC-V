@@ -9,7 +9,8 @@
 # Usage:
 #   cd <repo_root>
 #   bash scripts/build_tests.sh
-#   bash scripts/build_tests.sh --clean
+#   bash scripts/build_tests.sh gcd
+#   bash scripts/build_tests.sh scripts/gcd.c
 #
 # Requirements:
 #   clang (with riscv32-unknown-elf target support)
@@ -43,7 +44,34 @@ TEST_NAMES=(
     sort
     poly
     fib
+    gcd
+    prime
+    matrix
 )
+
+resolve_test_name() {
+    local arg="$1"
+
+    if [[ "${arg}" == *.c ]]; then
+        basename "${arg}" .c
+    else
+        printf '%s\n' "${arg}"
+    fi
+}
+
+resolve_test_source() {
+    local arg="$1"
+
+    if [[ "${arg}" == *.c ]]; then
+        if [[ "${arg}" = /* ]]; then
+            printf '%s\n' "${arg}"
+        else
+            printf '%s\n' "${REPO_DIR}/${arg}"
+        fi
+    else
+        printf '%s\n' "${SCRIPT_DIR}/${arg}.c"
+    fi
+}
 
 build_test() {
     local name="$1"
@@ -84,15 +112,30 @@ build_test() {
     echo "    -> ${out_dat}"
 }
 
-for name in "${TEST_NAMES[@]}"; do
+if [[ $# -gt 0 ]]; then
+    TEST_ARGS=("$@")
+else
+    TEST_ARGS=("${TEST_NAMES[@]}")
+fi
+
+BUILT_NAMES=()
+for arg in "${TEST_ARGS[@]}"; do
+    name="$(resolve_test_name "${arg}")"
+    source_file="$(resolve_test_source "${arg}")"
+
+    if [[ ! -f "${source_file}" ]]; then
+        echo "Missing test source: ${source_file}"
+        exit 1
+    fi
+
     echo "Generated ${name}.elf, ${name}.bin, ${name}.hex, ${name}.data"
     build_test "${name}" \
         "${SCRIPT_DIR}/start.s" \
-        "${SCRIPT_DIR}/${name}.c"
+        "${source_file}"
+    BUILT_NAMES+=("${name}")
 done
 
-
-for name in "${TEST_NAMES[@]}"; do
+for name in "${BUILT_NAMES[@]}"; do
     rm -f \
         "${SCRIPT_DIR}/${name}.elf" \
         "${SCRIPT_DIR}/${name}.bin" \

@@ -1,0 +1,14 @@
+*
+!.gitignore
+!rv32i_fpga.qpf
+!rv32i_fpga.qsf
+!rv32i_fpga.sdc
+!rv32i_fpga.v
+!wrapper.v
+!ram_a.qip
+!ram_a.v
+!ram_b.qip
+!ram_b.v
+!unnamed.qsys
+db/
+incremental_db/

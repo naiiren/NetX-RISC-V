@@ -2,7 +2,6 @@ application rv32i;
 
 import std.selector.*;
 import std.utils.REG;
-import std.memory.REG_FILE;
 import std.arith.BARREL_SHIFTER;
 
 
@@ -17,7 +16,9 @@ import std.arith.BARREL_SHIFTER;
   * - MEM: Data memory access.
   * - WB: Register file writeback.
 */
-component CORE : [clk, rst, instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr] {
+component CORE : [clk, rst, instr, dmem_out] -> [
+    imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr, SSD
+] {
     // ===== External ports and clock/reset =====
     wire clk of clock();
     wire rst of bit(1);
@@ -75,7 +76,7 @@ component CORE : [clk, rst, instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, 
     auto memwb_fwd_ok <> AND(3) <> [memwb.valid, memwb.reg_wr, rd_nonzero(memwb.rd)];
     auto exmem_fwd_data <> MUX(1) <> [exmem.mem_to_reg, exmem.result, dmem_out];
 
-    auto [id_ra, id_rb] <> REG_FILE (
+    auto [id_ra, id_rb, x10] <> REG_FILE (
         width=32,
         capacity=5,
         pos_edge=false,
@@ -236,6 +237,14 @@ component CORE : [clk, rst, instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, 
     memwb.rd         <> reg(5'd0)  <> exmem.rd;
     memwb.result     <> reg(32'd0) <> exmem.result;
     memwb.mem_data   <> reg(32'd0) <> dmem_out;
+
+    // ===== FPGA-specific I/O =====
+
+    // Seven-segment display shows the value of x10 (a0) for observation
+    wire SSD[8] of bit(7);
+    for i in [0..8] {
+        SSD[i] <> HEX_TO_7SEG <> x10[i*4+3 : i*4];
+    }
 }
 
 /**
@@ -432,4 +441,27 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
         case[3'b100] : immJ,
         default : 32'b0
     };
+}
+
+component REG_FILE(width, capacity, pos_edge, high_rst) : 
+    [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> [dout_a, dout_b, data[10]] {
+    wire clk of clock();
+    wire rst, wr_en of bit(1);
+    wire rd_addr_a, rd_addr_b, wr_addr of bit(capacity);
+    wire din, dout_a, dout_b of bit(width);
+
+    let W = 2**capacity;
+    wire data[W] of bit(width);
+
+    wire wr_mask of bit(W);
+    wr_mask <> DECODER(capacity) <> wr_addr;
+    for i in [0..W] {
+        data[i] <> REG(pos_edge, high_rst, 0) <> [clk, rst,
+            MUX(1) <> [
+                AND <> [wr_mask[i], wr_en], data[i], din
+            ]
+        ];
+    }
+    dout_a <> MUX(capacity) <> [rd_addr_a] ++ [data[i] | i in [0..W]];
+    dout_b <> MUX(capacity) <> [rd_addr_b] ++ [data[i] | i in [0..W]];
 }
