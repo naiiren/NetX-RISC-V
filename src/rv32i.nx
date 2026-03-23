@@ -17,7 +17,7 @@ import std.arith.BARREL_SHIFTER;
   * - MEM: Data memory access.
   * - WB: Register file writeback.
 */
-component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr] {
+component CORE : [clk, rst, instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr] {
     // ===== External ports and clock/reset =====
     wire clk of clock();
     wire rst of bit(1);
@@ -29,11 +29,6 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
     let nop = 32'h00000013; // addi x0, x0, 0
     let rd_nonzero(rd) = OR <> [rd[i] | i in [0..5]];
     let reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
-
-    // ===== IF stage state =====
-    wire PC of bit(32);
-    wire last_pc of bit(32);
-    auto pc_plus4 <> ADD <> [PC, 32'd4];
 
     // ===== Pipeline register bundles (stage boundaries) =====
     bundle ifid of IF_ID_PIPE;
@@ -55,7 +50,6 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
     wire id_imm of bit(32);
     id_ctl <> INSTR_DECODER <> [id_op, id_func3, id_func7[5]];
     id_imm <> IMM_SELECTOR  <> [id_ctl.ext_op, ifid.instr];
-    auto id_stall <> 1'b0;
 
     // Decode-time branch prediction:
     // - direct JAL uses the immediate target immediately,
@@ -162,61 +156,44 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
         MUX(2) <> [idex.b_src, ex_rb_fwd, idex.imm, 32'd4, 32'd4],
         idex.alu_ctl
     ];
-    auto ex_actual_taken <> OR <> [ex_pc_a_src, ex_pc_b_src];
+    auto ex_actual_taken   <> OR  <> [ex_pc_a_src, ex_pc_b_src];
     auto ex_fallthrough_pc <> ADD <> [idex.pc, 32'd4];
-    auto ex_correct_pc <> MUX(1) <> [ex_actual_taken, ex_fallthrough_pc, ex_branch_target];
+    
+    auto ex_correct_pc   <> MUX(1) <> [ex_actual_taken, ex_fallthrough_pc, ex_branch_target];
     auto ex_predicted_pc <> MUX(1) <> [idex.pred_taken, ex_fallthrough_pc, idex.pred_target];
-    auto ex_mispredict <> NOT <> EQ <> [ex_predicted_pc, ex_correct_pc];
-    auto ex_redirect <> AND <> [idex.valid, ex_mispredict];
-    auto ex_redirect_flush <> ex_redirect;
-    auto redirect_flush <> OR <> [id_redirect, ex_redirect_flush];
-    auto redirect_flush_d1 <> reg(1'b0) <> [redirect_flush];
-    auto if_flush <> OR <> [redirect_flush, redirect_flush_d1];
 
-    // ===== IF control: choose between sequential fetch, predicted jump, or resolved redirect =====
-    last_pc <> reg(32'd0) <> [PC];
+    // redirect if mispredicted
+    auto ex_redirect <> AND <> [
+        idex.valid, 
+        NE <> [ex_predicted_pc, ex_correct_pc] 
+    ];
+
+    // Flush if there's a redirect. 
+    auto redirect_flush <> OR <> [id_redirect, ex_redirect];
+    auto ex_flush <> reg(1'b0) <> [redirect_flush];
+    auto if_flush <> OR <> [redirect_flush, ex_flush];
+
+    // ===== IF stage state =====
+    wire PC of bit(32);
+    // choose between sequential fetch, predicted jump, or resolved redirect
     PC <> reg(32'd0) <> MUX(1) <> [
         ex_redirect, 
         MUX(1) <> [
-            id_stall,
-            MUX(1) <> [
-                id_redirect, 
-                pc_plus4, 
-                id_jump_target
-            ],
-            imem_addr
-        ], 
+            id_redirect, 
+            ADD <> [PC, 32'd4], 
+            id_jump_target
+        ],
         ex_correct_pc
     ];
     imem_addr <> MUX(1) <> [rst, PC, 32'd0];
 
     // IF/ID register: inject NOP on redirect (either predicted or resolved).
-    ifid.valid <> reg(1'b0) <> MUX(1) <> [
-        id_stall,
-        NOT <> if_flush,
-        ifid.valid
-    ];
-    ifid.pc <> reg(32'd0) <> MUX(1) <> [
-        id_stall,
-        MUX(1) <> [
-            if_flush,
-            SUB <> [PC, 32'd4],
-            32'd0
-        ],
-        ifid.pc
-    ];
-    ifid.instr <> reg(nop) <> MUX(1) <> [
-        id_stall,
-        MUX(1) <> [
-            if_flush,
-            instr,
-            nop
-        ],
-        ifid.instr
-    ];
+    ifid.valid <> reg(1'b0)  <> NOT    <> [if_flush];
+    ifid.pc    <> reg(32'd0) <> MUX(1) <> [if_flush, SUB <> [PC, 32'd4], 32'd0];
+    ifid.instr <> reg(nop)   <> MUX(1) <> [if_flush, instr, nop];
 
     // ===== ID/EX register: either forward decoded values or insert a bubble =====
-    auto idex_flush  <> OR <> [ex_redirect_flush, redirect_flush_d1, id_stall];
+    auto idex_flush  <> OR <> [ex_redirect, ex_flush];
     idex.valid       <> reg(1'b0)    <> MUX(1) <> [idex_flush, ifid.valid, 1'b0];
     idex.pc          <> reg(32'd0)   <> MUX(1) <> [idex_flush, ifid.pc, 32'd0];
     idex.pred_taken  <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_redirect, 1'b0];
@@ -237,28 +214,28 @@ component CORE : [instr, dmem_out] -> [imem_addr, dmem_addr, dmem_in, dmem_op, d
     idex.alu_ctl     <> reg(4'b0000) <> MUX(1) <> [idex_flush, id_ctl.alu_ctl, 4'b0000];
 
     // ===== EX/MEM register =====
-    exmem.valid      <> reg(1'b0)   <> [idex.valid];
-    exmem.reg_wr     <> reg(1'b0)   <> [idex.reg_wr];
-    exmem.mem_to_reg <> reg(1'b0)   <> [idex.mem_to_reg];
-    exmem.mem_wr     <> reg(1'b0)   <> [idex.mem_wr];
-    exmem.mem_op     <> reg(3'b010) <> [idex.mem_op];
-    exmem.rd         <> reg(5'd0)   <> [idex.rd];
-    exmem.result     <> reg(32'd0)  <> [ex_result];
-    exmem.store_data <> reg(32'd0)  <> [ex_rb_fwd];
+    exmem.valid      <> reg(1'b0)   <> idex.valid;
+    exmem.reg_wr     <> reg(1'b0)   <> idex.reg_wr;
+    exmem.mem_to_reg <> reg(1'b0)   <> idex.mem_to_reg;
+    exmem.mem_wr     <> reg(1'b0)   <> idex.mem_wr;
+    exmem.mem_op     <> reg(3'b010) <> idex.mem_op;
+    exmem.rd         <> reg(5'd0)   <> idex.rd;
+    exmem.result     <> reg(32'd0)  <> ex_result;
+    exmem.store_data <> reg(32'd0)  <> ex_rb_fwd;
 
     // ===== MEM stage: external memory request generation =====
     dmem_addr <> MUX(1) <> [exmem.valid, 32'd0, exmem.result];
     dmem_in   <> MUX(1) <> [exmem.valid, 32'd0, exmem.store_data];
     dmem_op   <> MUX(1) <> [exmem.valid, 3'b010, exmem.mem_op];
-    dmem_wr   <> AND(2) <> [exmem.valid, exmem.mem_wr];
+    dmem_wr   <> AND    <> [exmem.valid, exmem.mem_wr];
 
     // ===== MEM/WB register =====
-    memwb.valid      <> reg(1'b0)  <> [exmem.valid];
-    memwb.reg_wr     <> reg(1'b0)  <> [exmem.reg_wr];
-    memwb.mem_to_reg <> reg(1'b0)  <> [exmem.mem_to_reg];
-    memwb.rd         <> reg(5'd0)  <> [exmem.rd];
-    memwb.result     <> reg(32'd0) <> [exmem.result];
-    memwb.mem_data   <> reg(32'd0) <> [dmem_out];
+    memwb.valid      <> reg(1'b0)  <> exmem.valid;
+    memwb.reg_wr     <> reg(1'b0)  <> exmem.reg_wr;
+    memwb.mem_to_reg <> reg(1'b0)  <> exmem.mem_to_reg;
+    memwb.rd         <> reg(5'd0)  <> exmem.rd;
+    memwb.result     <> reg(32'd0) <> exmem.result;
+    memwb.mem_data   <> reg(32'd0) <> dmem_out;
 }
 
 /**
