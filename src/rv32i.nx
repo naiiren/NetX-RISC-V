@@ -47,10 +47,10 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         ifid.instr[6:0]
     ];
 
+      wire id_imm of bit(32);
     bundle id_ctl of CTL_SIGNAL_SET;
-    wire id_imm of bit(32);
-    id_ctl <> INSTR_DECODER <> [id_op, id_func3, id_func7[5]];
     id_imm <> IMM_SELECTOR  <> [id_ctl.ext_op, ifid.instr];
+    id_ctl <> INSTR_DECODER <> [id_op, id_func3, id_func7[5]];
 
     // Decode-time branch prediction:
     // - direct JAL uses the immediate target immediately,
@@ -72,13 +72,13 @@ component CORE : [clk, rst, instr, dmem_out] -> [
 
     // ===== WB view used by ID bypass and register-file writeback =====
     auto wb_result <> MUX(1) <> [memwb.mem_to_reg, memwb.result, memwb.mem_data];
-    auto exmem_fwd_ok <> AND(4) <> [
+    auto exmem_fwd_ok <> AND <> [
         exmem.valid,
         exmem.reg_wr,
         rd_nonzero(exmem.rd),
         NOT <> exmem.mem_to_reg
     ];
-    auto memwb_fwd_ok <> AND(3) <> [memwb.valid, memwb.reg_wr, rd_nonzero(memwb.rd)];
+    auto memwb_fwd_ok <> AND <> [memwb.valid, memwb.reg_wr, rd_nonzero(memwb.rd)];
     auto exmem_fwd_data <> exmem.result;
 
     auto [id_ra, id_rb, x10] <> REG_FILE (
@@ -94,8 +94,7 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         wr_addr   : memwb.rd,
         wr_en     : AND <> [
             memwb.valid, 
-            memwb.reg_wr, 
-            rd_nonzero(memwb.rd)
+            memwb.reg_wr
         ],
         din       : wb_result
     };
@@ -104,19 +103,17 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         exmem_fwd_ok, id_ctl.rs1_used,
         EQ <> [exmem.rd, id_rs1]
     ];
-    auto wb_bypass_rs1 <> AND(4) <> [
+    auto wb_bypass_rs1 <> AND <> [
         memwb_fwd_ok, id_ctl.rs1_used,
-        EQ <> [memwb.rd, id_rs1],
-        NOT <> exmem_bypass_rs1
+        EQ <> [memwb.rd, id_rs1]
     ];
     auto exmem_bypass_rs2 <> AND <> [
         exmem_fwd_ok, id_ctl.rs2_used,
         EQ <> [exmem.rd, id_rs2]
     ];
-    auto wb_bypass_rs2 <> AND(4) <> [
+    auto wb_bypass_rs2 <> AND <> [
         memwb_fwd_ok, id_ctl.rs2_used,
-        EQ <> [memwb.rd, id_rs2],
-        NOT <> exmem_bypass_rs2
+        EQ <> [memwb.rd, id_rs2]
     ];
     auto id_ra_eff <> MUX(1) <> [
         exmem_bypass_rs1,
@@ -132,13 +129,22 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     // ===== EX stage operand forwarding =====
     // EX/MEM forwarding only covers ALU results. Loads wait until MEM/WB so raw
     // dmem_out does not feed the redirect path combinationally.
-    auto fwd_rs1_from_exmem <> AND(2) <> [exmem_fwd_ok, EQ <> [exmem.rd, idex.rs1]];
-    auto fwd_rs1_from_memwb <> AND(3) <> [
-        memwb_fwd_ok, EQ <> [memwb.rd, idex.rs1], NOT <> fwd_rs1_from_exmem
+    auto fwd_rs1_from_exmem <> AND <> [
+        exmem_fwd_ok,
+        EQ <> [exmem.rd, idex.rs1]
     ];
-    auto fwd_rs2_from_exmem <> AND(2) <> [exmem_fwd_ok, EQ <> [exmem.rd, idex.rs2]];
-    auto fwd_rs2_from_memwb <> AND(3) <> [
-        memwb_fwd_ok, EQ <> [memwb.rd, idex.rs2], NOT <> fwd_rs2_from_exmem
+    auto fwd_rs2_from_exmem <> AND <> [
+        exmem_fwd_ok,
+        EQ <> [exmem.rd, idex.rs2]
+    ];
+
+    auto fwd_rs1_from_memwb <> AND <> [
+        memwb_fwd_ok,
+        EQ <> [memwb.rd, idex.rs1]
+    ];
+    auto fwd_rs2_from_memwb <> AND <> [
+        memwb_fwd_ok,
+        EQ <> [memwb.rd, idex.rs2]
     ];
 
     auto ex_ra_fwd <> MUX(1) <> [
@@ -150,6 +156,32 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         fwd_rs2_from_exmem,
         MUX(1) <> [fwd_rs2_from_memwb, idex.rb, wb_result],
         exmem_fwd_data
+    ];
+
+    // Keep the redirect path off the EX forwarding network. Control-flow
+    // instructions stall in decode if they depend on the instruction currently
+    // in ID/EX, then use the latched ID/EX operands directly in EX.
+    auto id_is_ctrl_flow <> OR <> [id_ctl.branch[i] | i in [0..3]];
+    auto idex_has_rd <> AND <> [idex.valid, idex.reg_wr, rd_nonzero(idex.rd)];
+    auto exmem_load_has_rd <> AND <> [exmem.valid, exmem.mem_to_reg, rd_nonzero(exmem.rd)];
+
+
+    let rs_idx(idx)     = if idx == 1 then id_rs1          else id_rs2;
+    let rs_use_idx(idx) = if idx == 1 then id_ctl.rs1_used else id_ctl.rs2_used;
+    let ctrl_dep(idx) = AND <> [
+        idex_has_rd, 
+        rs_use_idx(idx), EQ <> [idex.rd, rs_idx(idx)]
+    ];
+    let ctrl_wait_exmem(idx) = AND <> [
+        exmem_load_has_rd, 
+        rs_use_idx(idx), EQ <> [exmem.rd, rs_idx(idx)]
+    ];
+    auto ctrl_flow_stall <> AND <> [
+        ifid.valid, id_is_ctrl_flow,
+        OR <> [
+            ctrl_dep(1), ctrl_wait_exmem(1),
+            ctrl_dep(2), ctrl_wait_exmem(2)
+        ]
     ];
 
     // A load result is only ready after MEM/WB. Stall one cycle when the next
@@ -164,27 +196,45 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         rd_nonzero(idex.rd),
         EQ <> [idex.rd, id_rs2]
     ];
-    auto load_use_stall <> AND(3) <> [
-        ifid.valid,
-        idex.valid,
+    auto load_use_stall <> AND <> [
+        ifid.valid, idex.valid,
         AND <> [idex.mem_to_reg, OR <> [load_use_rs1, load_use_rs2]]
     ];
-    auto id_redirect_eff <> AND <> [id_redirect, NOT <> load_use_stall];
+    auto front_stall <> OR <> [load_use_stall, ctrl_flow_stall];
+    auto id_redirect_eff <> AND <> [id_redirect, NOT <> front_stall];
 
     // ===== EX stage: branch resolution, ALU execution, redirect decision =====
-    auto [ex_pc_a_src, ex_pc_b_src] <> BRANCH_COND <> [idex.branch, ex_zero, ex_less];
-    auto ex_branch_target <> ADD <> [
-        MUX(1) <> [ex_pc_a_src, 32'd4, idex.imm],
-        MUX(1) <> [ex_pc_b_src, idex.pc, ex_ra_fwd]
-    ];
     auto [ex_result, ex_zero, ex_less] <> ALU <> [
         MUX(1) <> [idex.a_src, ex_ra_fwd, idex.pc],
         MUX(2) <> [idex.b_src, ex_rb_fwd, idex.imm, 32'd4, 32'd4],
         idex.alu_ctl
     ];
-    auto ex_actual_taken   <> OR  <> [ex_pc_a_src, ex_pc_b_src];
+    auto [ex_ctrl_eq, ex_ctrl_ltu, ex_ctrl_lts] <> BRANCH_COMPARE <> [idex.ra, idex.rb];
+
+    auto ex_is_jal  <> EQ <> [idex.branch, 3'b001];
+    auto ex_is_jalr <> EQ <> [idex.branch, 3'b010];
+    auto ex_is_cond <> idex.branch[2];
+    auto ex_cond_taken <> MUX(2) <> {
+        sel : idex.branch[1:0],
+        case[2'b00] : ex_ctrl_eq,
+        case[2'b01] : NOT <> ex_ctrl_eq,
+        case[2'b10] : MUX(1) <> [idex.branch[0], ex_ctrl_ltu, ex_ctrl_lts],
+        case[2'b11] : NOT <> MUX(1) <> [idex.branch[0], ex_ctrl_ltu, ex_ctrl_lts]
+    };
+    auto ex_actual_taken <> OR <> [
+        ex_is_jal, ex_is_jalr,
+        AND <> [ex_is_cond, ex_cond_taken]
+    ];
+    auto ex_branch_target <> ADD <> [
+        MUX(1) <> [
+            ex_is_jalr, 
+            idex.pc, 
+            idex.ra
+        ],
+        idex.imm
+    ];
+
     auto ex_fallthrough_pc <> ADD <> [idex.pc, 32'd4];
-    
     auto ex_correct_pc   <> MUX(1) <> [ex_actual_taken, ex_fallthrough_pc, ex_branch_target];
     auto ex_predicted_pc <> MUX(1) <> [idex.pred_taken, ex_fallthrough_pc, idex.pred_target];
 
@@ -203,7 +253,7 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     wire PC of bit(32);
     // choose between sequential fetch, predicted jump, or resolved redirect
     PC <> reg(32'd0) <> MUX(1) <> [
-        load_use_stall,
+        front_stall,
         MUX(1) <> [
             ex_redirect, 
             MUX(1) <> [
@@ -217,25 +267,13 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     ];
     imem_addr <> MUX(1) <> [rst, PC, 32'd0];
 
-    // IF/ID register: inject NOP on redirect and hold on a load-use stall.
-    ifid.valid <> reg(1'b0)  <> MUX(1) <> [
-        if_flush,
-        MUX(1) <> [load_use_stall, NOT <> [if_flush], ifid.valid],
-        1'b0
-    ];
-    ifid.pc    <> reg(32'd0) <> MUX(1) <> [
-        if_flush,
-        MUX(1) <> [load_use_stall, SUB <> [PC, 32'd4], ifid.pc],
-        32'd0
-    ];
-    ifid.instr <> reg(nop)   <> MUX(1) <> [
-        if_flush,
-        MUX(1) <> [load_use_stall, instr, ifid.instr],
-        nop
-    ];
+    // IF/ID register: hold on a load-use stall; redirects only invalidate the entry.
+    ifid.valid <> reg(1'b0)  <> MUX(1) <> [front_stall, NOT <> if_flush, ifid.valid];
+    ifid.pc    <> reg(32'd0) <> MUX(1) <> [front_stall, SUB <> [PC, 32'd4], ifid.pc];
+    ifid.instr <> reg(nop)   <> MUX(1) <> [front_stall, instr, ifid.instr];
 
     // ===== ID/EX register: either forward decoded values or insert a bubble =====
-    auto idex_flush  <> OR <> [load_use_stall, OR <> [ex_redirect, ex_flush]];
+    auto idex_flush  <> OR <> [front_stall, OR <> [ex_redirect, ex_flush]];
     idex.valid       <> reg(1'b0)    <> MUX(1) <> [idex_flush, ifid.valid, 1'b0];
     idex.pc          <> reg(32'd0)   <> MUX(1) <> [idex_flush, ifid.pc, 32'd0];
     idex.pred_taken  <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_redirect_eff, 1'b0];
@@ -283,9 +321,7 @@ component CORE : [clk, rst, instr, dmem_out] -> [
 
     // Seven-segment display shows the value of x10 (a0) for observation
     wire SSD[8] of bit(7);
-    for i in [0..8] {
-        SSD[i] <> HEX_TO_7SEG <> x10[i*4+3 : i*4];
-    }
+    SSD <> [HEX_TO_7SEG <> x10[i*4+3 : i*4] | i in [0..8]];
 }
 
 /**
@@ -496,13 +532,14 @@ component REG_FILE(width, capacity, pos_edge, high_rst) :
 
     wire wr_mask of bit(W);
     wr_mask <> DECODER(capacity) <> wr_addr;
-    for i in [0..W] {
+    for i in [1..W] {
         data[i] <> REG(pos_edge, high_rst, 0) <> [clk, rst,
             MUX(1) <> [
                 AND <> [wr_mask[i], wr_en], data[i], din
             ]
         ];
     }
+    data[0] <> 32'd0;
     dout_a <> MUX(capacity) <> [rd_addr_a] ++ [data[i] | i in [0..W]];
     dout_b <> MUX(capacity) <> [rd_addr_b] ++ [data[i] | i in [0..W]];
 }

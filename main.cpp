@@ -256,7 +256,6 @@ int main(int argc, char *argv[]) {
         const auto instr_mem = new Memory(std::ifstream(file_path));
         const auto data_mem  = new Memory(std::ifstream(data_path.string() + ".data"));
 
-        // ctx.stashed_flip("clk");
         ctx.stashed_set("rst", value_t{1, 1});
         ctx.apply_stash();
         ctx.stashed_flip("clk");

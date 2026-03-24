@@ -176,7 +176,7 @@ ram_a data_mem(
 
 ram_b instr_mem(
     .address(imemAddr[16:2]),
-    .clock(clk),
+    .clock(~clk),
     .data(32'b0),
     .wren(1'b0),
     .q(imemDataOut)

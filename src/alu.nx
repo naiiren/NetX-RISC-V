@@ -60,15 +60,40 @@ component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
     auto    cin <> OR <> [alu_ctl[3], EQ <> [3'b010, opcode]];
 }
 
+component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
+    wire a, b, sum                  of bit(32);
+    wire cin, carry, zero, overflow of bit(1);
+
+    let pattern(k) = 
+        let msb = 8 * k + 7 in
+        let lsb = 8 * k in
+        [#sum[msb:lsb], TO] <> CLA(8) <> [
+            a[msb:lsb]#, b[msb:lsb]#, TO
+        ];
+
+    let chain(k) =
+        pattern(k) <> (
+            if k == 0 then TO
+            else chain(k - 1)
+        );
+
+    carry <> chain(3) <> cin;
+     zero <> NOT <> OR <> [sum[i] | i in [0..32]];
+    overflow <> AND <> [
+        NOT <> XOR <> [a[31], b[31]],
+        XOR  <> [a[31], sum[31]]
+    ];
+}
+
 /**
-  * Adder Component
+  * Carry-Lookahead Adder Component
   * This component implements a 32-bit adder using a carry-lookahead approach for efficient addition.
   * It takes two 32-bit inputs (a and b) and a carry-in (cin) to produce a 32-bit sum and a carry-out.
   * The adder also generates flags for zero and overflow conditions, which are used by the ALU for certain operations.
 */
-component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
-    wire a, b, sum                  of bit(32);
-    wire cin, carry, zero, overflow of bit(1);
+component CLA(n) : [a, b, cin] -> [sum, carry] {
+    wire a, b, sum  of bit(n);
+    wire cin, carry of bit(1);
 
     let P(i) =  OR <> [a[i], b[i]];
     let G(i) = AND <> [a[i], b[i]];
@@ -76,13 +101,8 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
         if i == 0 then cin
         else OR <> [G(i-1), AND <> [P(i-1), C(i-1)]];
 
-    for i in [0..32] {
+    for i in [0..n] {
         sum[i] <> XOR <> [a[i], b[i], C(i)];
     }
-    carry <> C(32);
-    zero <> NOT <> OR <> [sum[i] | i in [0..32]];
-    overflow <> AND <> [
-        NOT <> XOR <> [a[31], b[31]],
-        XOR  <> [a[31], sum[31]]
-    ];
+    carry <> C(n);
 }

@@ -24,6 +24,26 @@ component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
 }
 
 /**
+  * Branch Comparator
+  * Computes equality plus signed/unsigned less-than for two 32-bit operands.
+  * This is useful when control-flow resolution should avoid the main ALU/forwarding cone.
+*/
+component BRANCH_COMPARE : [a, b] -> [eq, ltu, lts] {
+    wire a, b of bit(32);
+    wire eq, ltu, lts of bit(1);
+
+    let eq_bit(i) = NOT <> XOR <> [a[i], b[i]];
+    let eq_above(i) =
+        if i == 31 then 1'b1
+        else AND <> [eq_bit(i + 1), eq_above(i + 1)];
+    let lt_term(i) = AND <> [eq_above(i), NOT <> a[i], b[i]];
+
+    eq  <> AND <> [eq_bit(i) | i in [0..32]];
+    ltu <> OR  <> [lt_term(i) | i in [0..32]];
+    lts <> MUX(1) <> [XOR <> [a[31], b[31]], ltu, a[31]];
+}
+
+/**
   * Branch Predictor
   * Branch predictor with a tiny BTB and 2-bit saturating counters.
   * Direct JAL is predicted taken in decode. Conditional branches use BTB state.
