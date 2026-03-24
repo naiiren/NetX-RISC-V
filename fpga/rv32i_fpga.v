@@ -73,7 +73,7 @@ module rv32i_fpga(
 //  REG/WIRE declarations
 //=======================================================
 
-reg         clk;
+wire        clk;
 wire        rst;
 
 wire [31:0] imemDataOut;
@@ -97,6 +97,7 @@ wire        dmemRamWe;
 //  Structural coding
 //=======================================================
 
+/*
 reg counter;
 always @(posedge CLOCK_50 or posedge rst) begin
     if (rst) begin
@@ -109,8 +110,9 @@ always @(posedge CLOCK_50 or posedge rst) begin
         end
     end
 end
+*/
 
-// assign clk = CLOCK_50;
+assign clk = CLOCK_50;
 assign rst = SW[0];
 assign LEDR[17:0] = imemAddr[17:0];
 
@@ -165,9 +167,9 @@ ram_a data_mem(
     .byteena_a(dmemByteEn),
     .data(dmemRamIn),
     .rdaddress(dmemRdAddr),
-    .rdclock(clk),
+    .rdclock(~clk),
     .wraddress(dmemWrAddr),
-    .wrclock(clk),
+    .wrclock(~clk),
     .wren(dmemRamWe),
     .q(dmemRawOut)
 );

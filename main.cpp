@@ -256,7 +256,7 @@ int main(int argc, char *argv[]) {
         const auto instr_mem = new Memory(std::ifstream(file_path));
         const auto data_mem  = new Memory(std::ifstream(data_path.string() + ".data"));
 
-        ctx.stashed_flip("clk");
+        // ctx.stashed_flip("clk");
         ctx.stashed_set("rst", value_t{1, 1});
         ctx.apply_stash();
         ctx.stashed_flip("clk");
@@ -273,7 +273,6 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i != max_cycles; ++i) {
             const auto fetch_pc = ctx.get("imem_addr");
             const auto instr = instr_mem->read_word(fetch_pc);
-            ctx.stashed_flip("clk");
 
             if (enable_trace) {
                 std::cout << std::endl
@@ -316,8 +315,11 @@ int main(int argc, char *argv[]) {
                 drain_cycles--;
             }
 
-            ctx.stashed_flip("clk");
             ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+            ctx.apply_stash();
+            ctx.stashed_flip("clk");
+            ctx.apply_stash();
+            ctx.stashed_flip("clk");
             ctx.apply_stash();
         }
 

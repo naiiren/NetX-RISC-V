@@ -29,7 +29,7 @@ component CORE : [clk, rst, instr, dmem_out] -> [
 
     let nop = 32'h00000013; // addi x0, x0, 0
     let rd_nonzero(rd) = OR <> [rd[i] | i in [0..5]];
-    let reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
 
     // ===== Pipeline register bundles (stage boundaries) =====
     bundle ifid of IF_ID_PIPE;
@@ -72,14 +72,19 @@ component CORE : [clk, rst, instr, dmem_out] -> [
 
     // ===== WB view used by ID bypass and register-file writeback =====
     auto wb_result <> MUX(1) <> [memwb.mem_to_reg, memwb.result, memwb.mem_data];
-    auto exmem_fwd_ok <> AND(3) <> [exmem.valid, exmem.reg_wr, rd_nonzero(exmem.rd)];
+    auto exmem_fwd_ok <> AND(4) <> [
+        exmem.valid,
+        exmem.reg_wr,
+        rd_nonzero(exmem.rd),
+        NOT <> exmem.mem_to_reg
+    ];
     auto memwb_fwd_ok <> AND(3) <> [memwb.valid, memwb.reg_wr, rd_nonzero(memwb.rd)];
-    auto exmem_fwd_data <> MUX(1) <> [exmem.mem_to_reg, exmem.result, dmem_out];
+    auto exmem_fwd_data <> exmem.result;
 
     auto [id_ra, id_rb, x10] <> REG_FILE (
         width=32,
         capacity=5,
-        pos_edge=false,
+        pos_edge=true,
         high_rst=true
     ) <> {
         clk       : clk,
@@ -125,7 +130,8 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     ];
 
     // ===== EX stage operand forwarding =====
-    // EX/MEM has priority over MEM/WB; load data is available as dmem_out in this model.
+    // EX/MEM forwarding only covers ALU results. Loads wait until MEM/WB so raw
+    // dmem_out does not feed the redirect path combinationally.
     auto fwd_rs1_from_exmem <> AND(2) <> [exmem_fwd_ok, EQ <> [exmem.rd, idex.rs1]];
     auto fwd_rs1_from_memwb <> AND(3) <> [
         memwb_fwd_ok, EQ <> [memwb.rd, idex.rs1], NOT <> fwd_rs1_from_exmem
@@ -145,6 +151,25 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         MUX(1) <> [fwd_rs2_from_memwb, idex.rb, wb_result],
         exmem_fwd_data
     ];
+
+    // A load result is only ready after MEM/WB. Stall one cycle when the next
+    // instruction depends on the load currently in ID/EX.
+    auto load_use_rs1 <> AND <> [
+        id_ctl.rs1_used,
+        rd_nonzero(idex.rd),
+        EQ <> [idex.rd, id_rs1]
+    ];
+    auto load_use_rs2 <> AND <> [
+        id_ctl.rs2_used,
+        rd_nonzero(idex.rd),
+        EQ <> [idex.rd, id_rs2]
+    ];
+    auto load_use_stall <> AND(3) <> [
+        ifid.valid,
+        idex.valid,
+        AND <> [idex.mem_to_reg, OR <> [load_use_rs1, load_use_rs2]]
+    ];
+    auto id_redirect_eff <> AND <> [id_redirect, NOT <> load_use_stall];
 
     // ===== EX stage: branch resolution, ALU execution, redirect decision =====
     auto [ex_pc_a_src, ex_pc_b_src] <> BRANCH_COND <> [idex.branch, ex_zero, ex_less];
@@ -170,7 +195,7 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     ];
 
     // Flush if there's a redirect. 
-    auto redirect_flush <> OR <> [id_redirect, ex_redirect];
+    auto redirect_flush <> OR <> [id_redirect_eff, ex_redirect];
     auto ex_flush <> reg(1'b0) <> [redirect_flush];
     auto if_flush <> OR <> [redirect_flush, ex_flush];
 
@@ -178,26 +203,42 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     wire PC of bit(32);
     // choose between sequential fetch, predicted jump, or resolved redirect
     PC <> reg(32'd0) <> MUX(1) <> [
-        ex_redirect, 
+        load_use_stall,
         MUX(1) <> [
-            id_redirect, 
-            ADD <> [PC, 32'd4], 
-            id_jump_target
+            ex_redirect, 
+            MUX(1) <> [
+                id_redirect_eff, 
+                ADD <> [PC, 32'd4], 
+                id_jump_target
+            ],
+            ex_correct_pc
         ],
-        ex_correct_pc
+        PC
     ];
     imem_addr <> MUX(1) <> [rst, PC, 32'd0];
 
-    // IF/ID register: inject NOP on redirect (either predicted or resolved).
-    ifid.valid <> reg(1'b0)  <> NOT    <> [if_flush];
-    ifid.pc    <> reg(32'd0) <> MUX(1) <> [if_flush, SUB <> [PC, 32'd4], 32'd0];
-    ifid.instr <> reg(nop)   <> MUX(1) <> [if_flush, instr, nop];
+    // IF/ID register: inject NOP on redirect and hold on a load-use stall.
+    ifid.valid <> reg(1'b0)  <> MUX(1) <> [
+        if_flush,
+        MUX(1) <> [load_use_stall, NOT <> [if_flush], ifid.valid],
+        1'b0
+    ];
+    ifid.pc    <> reg(32'd0) <> MUX(1) <> [
+        if_flush,
+        MUX(1) <> [load_use_stall, SUB <> [PC, 32'd4], ifid.pc],
+        32'd0
+    ];
+    ifid.instr <> reg(nop)   <> MUX(1) <> [
+        if_flush,
+        MUX(1) <> [load_use_stall, instr, ifid.instr],
+        nop
+    ];
 
     // ===== ID/EX register: either forward decoded values or insert a bubble =====
-    auto idex_flush  <> OR <> [ex_redirect, ex_flush];
+    auto idex_flush  <> OR <> [load_use_stall, OR <> [ex_redirect, ex_flush]];
     idex.valid       <> reg(1'b0)    <> MUX(1) <> [idex_flush, ifid.valid, 1'b0];
     idex.pc          <> reg(32'd0)   <> MUX(1) <> [idex_flush, ifid.pc, 32'd0];
-    idex.pred_taken  <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_redirect, 1'b0];
+    idex.pred_taken  <> reg(1'b0)    <> MUX(1) <> [idex_flush, id_redirect_eff, 1'b0];
     idex.pred_target <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_jump_target, 32'd0];
     idex.ra          <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_ra_eff, 32'd0];
     idex.rb          <> reg(32'd0)   <> MUX(1) <> [idex_flush, id_rb_eff, 32'd0];

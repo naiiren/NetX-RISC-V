@@ -48,7 +48,7 @@ component BRANCH_PREDICTOR : [
     wire pred_taken     of bit(1);  // Predictor decision for the decode-stage instruction.
     wire pred_target    of bit(32); // Predicted target PC when pred_taken is asserted.
 
-    let reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
 
     // 4-entry direct-mapped BTB (index = pc[3:2], tag = pc[31:4]).
     wire btb_valid[4]  of bit(1);
