@@ -60,6 +60,14 @@ component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
     auto    cin <> OR <> [alu_ctl[3], EQ <> [3'b010, opcode]];
 }
 
+/**
+  * Adder Component
+  * This component implements a 32-bit adder using a carry-lookahead approach for efficient addition.
+  * It takes two 32-bit inputs (a and b) and a carry-in (cin) to produce a 32-bit sum, a carry-out, a zero flag, and an overflow flag.
+  * The zero flag indicates if the result of the addition is zero, while the overflow flag indicates if there was an overflow during the addition.
+  *
+  * The adder is composed of four 8-bit carry-lookahead adders (CLA) that are chained together to handle the 32-bit addition.
+*/
 component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
     wire a, b, sum                  of bit(32);
     wire cin, carry, zero, overflow of bit(1);
@@ -87,9 +95,8 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
 
 /**
   * Carry-Lookahead Adder Component
-  * This component implements a 32-bit adder using a carry-lookahead approach for efficient addition.
-  * It takes two 32-bit inputs (a and b) and a carry-in (cin) to produce a 32-bit sum and a carry-out.
-  * The adder also generates flags for zero and overflow conditions, which are used by the ALU for certain operations.
+  * This component implements a n-bit adder using a carry-lookahead approach for efficient addition.
+  * It takes two n-bit inputs (a and b) and a carry-in (cin) to produce a n-bit sum and a carry-out.
 */
 component CLA(n) : [a, b, cin] -> [sum, carry] {
     wire a, b, sum  of bit(n);

@@ -1,89 +1,157 @@
-# NetX-RV32I Single Cycle CPU Core
+# NetX RV32I Pipelined CPU
 
-This project uses [NetX](https://github.com/pascal-lab/NetX), the schematic hardware description language, to implement a single-cycle RISC-V RV32I CPU core following the design from [NJU ProjectN Lecture Notes](https://nju-projectn.github.io/dlco-lecture-note/index.html). The design is tested using the [official RISC-V test suite](https://github.com/riscv/riscv-tests), ensuring compliance with the RV32I instruction set architecture.
+This repository contains a 5-stage pipelined RV32I CPU written in [NetX](https://github.com/pascal-lab/NetX), together with a C++ simulation harness, bare-metal C test programs, and an Intel Quartus FPGA wrapper for the Terasic DE2-115 platform.
 
-This project demonstrates how NetX's schematic model can be used to design digital systems where code is arranged to resemble the actual schematic diagram, making the design easier to understand and maintain.
+The current core includes:
 
-## Architecture Overview
+- 5 pipeline stages: `IF`, `ID`, `EX`, `MEM`, `WB`
+- hazard handling and operand forwarding
+- a small BTB-style branch predictor
 
-The CPU core follows the classic single-cycle RISC-V design:
+The project is regression-tested against both the standard RV32I instruction tests and a set of larger custom C programs.
 
-![schematic](https://nju-projectn.github.io/dlco-lecture-note/_images/rv32isingle.png)
+## Repository Layout
 
-The design supports the following RV32I instructions:
-
-- **R-Type**: ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
-- **I-Type**: ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI, LB, LH, LW, LBU, LHU, JALR
-- **S-Type**: SB, SH, SW
-- **B-Type**: BEQ, BNE, BLT, BGE, BLTU, BGEU
-- **U-Type**: LUI, AUIPC
-- **J-Type**: JAL
-
-## Project Structure
-
+```text
+├── _netx.toml          # NetX project configuration
+├── Makefile            # Main build/test/FPGA entry points
+├── main.cpp            # C++ simulator / test harness
+├── src/
+│   ├── rv32i.nx        # Top-level pipelined RV32I core
+│   ├── alu.nx          # ALU and adder implementation
+│   ├── branch.nx       # Branch predictor and branch comparison logic
+│   └── fpga.nx         # FPGA-facing NetX helpers
+├── testcases/          # Standard RV32I instruction tests
+├── scripts/
+│   ├── build_tests.sh  # Builds custom bare-metal C tests
+│   ├── fpga_flow.sh    # End-to-end FPGA compile/program flow
+│   ├── start.s         # Bare-metal startup stub
+│   ├── link.ld         # Linker script for custom tests
+│   └── *.c             # Custom benchmark / stress tests
+├── custom_cases/       # Generated custom test images
+├── fpga/
+│   ├── rv32i_fpga.v    # Board wrapper and data-memory adapter
+│   ├── ram_a.v         # Quartus-generated data memory IP
+│   ├── ram_b.v         # Quartus-generated instruction memory IP
+│   ├── rv32i_fpga.qsf  # Quartus project settings
+│   ├── rv32i_fpga.qpf  # Quartus project file
+│   ├── rv32i_fpga.sdc  # Timing constraints
+│   └── unnamed.qsys    # Qsys system file used by the FPGA project
+└── FPGA.jpg            # Board photo
 ```
-├── _netx.toml          # Project configuration file
-├── rv32i.nx            # Main CPU core implementation
-├── main.cpp            # C++ test harness and simulation driver
-├── Makefile            # Build configuration
-├── testcases/          # Instruction test cases
-│   ├── *.hex           # Initial contents of the instruction memory
-│   └── *.data          # Initial contents of the data memory
-└── build/              # Build artifacts and outputs
+
+## Prerequisites
+
+For simulation:
+
+- NetX compiler
+- C++23 compiler
+- `make`
+
+For building custom bare-metal tests:
+
+- `clang` with `riscv32-unknown-elf` target support
+- `llvm-objcopy`
+- `llvm-objdump`
+- `python3`
+
+For FPGA flow:
+
+- Intel Quartus Prime Lite / Standard command-line tools
+- `quartus_sh`
+- `quartus_pgm`
+
+## Simulation Workflow
+
+Build the simulator:
+
+```bash
+make
 ```
 
-## Getting Started
-
-### Prerequisites
-
-- [NetX](https://github.com/pascal-lab/NetX) compiler and simulator
-- C++23 compatible compiler (clang++ recommended)
-
-### Running Tests
-
-Run the complete test suite:
+Run the full regression suite:
 
 ```bash
 make run
 ```
 
-This will compile the NetX design and run it through all test cases using the C++ test harness.
+This runs:
 
+- all standard tests in `testcases/`, i.e., the standard RV32I instruction tests
+- all generated custom tests in `custom_cases/`, including `sort`, `poly`, `fib`, `gcd`, `prime`, and `matrix`, which are intended to stress recursion, stack traffic, loops and branches, load/store behavior, and predictor/redirect logic.
 
-## Development
-
-### Core Components
-
-The project consists of two main components:
-
-- **`_netx.toml`**: Project configuration file specifying the main source file and dependencies on the [NetX-std](https://github.com/pascal-lab/NetX-std) library
-- **`rv32i.nx`**: Main source file containing the schematic description of the CPU core, organized into the following components, each corresponding to a specific part of the CPU architecture:
-  
-  - Instruction Decoder
-  - Register File (32×32-bit registers)
-  - Arithmetic Logic Unit (ALU)
-  - Immediate Generator
-  - Branch Condition Logic
-  - Program Counter (PC) logic
-  - Memory Interface
-  
-  Note that the instruction memory and data memory are not implemented within the core itself, as the design targets on-chip memory for deployment. Instead, the core provides memory interfaces that can be connected to either on-chip memory blocks or simulated memory modules.
-
-### Test Framework
-
-The project includes a comprehensive C++ test harness (`main.cpp`) that:
-- Implements a simulated memory system that interfaces with the NetX core design. The memory is initialized with test program data from the hex files in the `testcases/` directory
-- Provides simulation stimuli to the CPU core, including clock generation and reset control
-- Validates execution results against expected outputs (the x10 register should contain the value `0x00C0FFEE` after successful test program execution)
-
-## FPGA Deployment
-
-This project can be synthesized for FPGA implementation using the NetX toolchain. To generate Verilog code for synthesis:
+Other useful targets:
 
 ```bash
-nx dump _netx.toml --top CORE -o out.v
+make raw      # disable native optimizations in the simulator
+make debug    # enable trace output from main.cpp
+make clean
 ```
 
-This command generates low-level Verilog code for the CPU core, which can then be synthesized using your preferred FPGA toolchain. The design has been successfully tested on the Terasic DE2-115 FPGA development platform using the DE2-115 System Builder and Intel Quartus Prime Lite Edition.
+## Custom Test Programs
+
+Custom programs live in `scripts/` and are built into `custom_cases/`.
+
+Build all default custom tests:
+
+```bash
+bash scripts/build_tests.sh
+```
+
+Build a single named test:
+
+```bash
+bash scripts/build_tests.sh gcd
+```
+
+Build directly from a source path:
+
+```bash
+bash scripts/build_tests.sh scripts/gcd.c
+```
+
+The generated outputs are:
+
+- `custom_cases/<name>.hex` for instruction memory
+- `custom_cases/<name>.data` for data memory
+
+These images are what the simulator and FPGA flow consume.
+
+## FPGA Flow
+
+The FPGA project targets the DE2-115 wrapper in `fpga/rv32i_fpga.v`.
+
+The wrapper currently:
+
+- instantiates `CORE`
+- uses `ram_b` for instruction memory
+- uses `ram_a` plus a byte-enable adapter for data memory
+- exposes `x10` on the seven-segment displays through the core output ports
+
+Run the full FPGA flow for a prebuilt test image:
+
+```bash
+bash scripts/fpga_flow.sh gcd
+```
+
+This script:
+
+1. regenerates `fpga/top.v` from NetX with `nx dump verilog`
+2. converts `custom_cases/<test>.{hex,data}` into Quartus `.mif` files
+3. runs a full Quartus compile
+4. programs the board with `quartus_pgm`
+
+If the custom image does not exist yet, build it first:
+
+```bash
+bash scripts/build_tests.sh gcd
+bash scripts/fpga_flow.sh gcd
+```
+
+Also, a makefile target is available for the same flow:
+
+```bash
+make fpga TEST=gcd
+```
 
 ![FPGA](https://github.com/naiiren/NetX-RISC-V/blob/main/FPGA.jpg)
