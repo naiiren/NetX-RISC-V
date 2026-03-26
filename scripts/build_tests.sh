@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-OUT_DIR="${REPO_DIR}/custom_cases"
+OUT_DIR="${OUT_DIR:-${REPO_DIR}/custom_cases}"
 
 CLANG="${CLANG:-clang}"
 OBJCOPY="${OBJCOPY:-llvm-objcopy-20}"

@@ -1,25 +1,288 @@
 application rv32i;
 
+import std.selector.*;
+import std.utils.REG;
+
 component HEX_TO_7SEG: [num] -> [code] {
-  wire num  of bit(4);
-  wire code of bit(7);
-  code <> MUX(4) <> [
-    num,
-    7'b1000000, // 0
-    7'b1111001, // 1
-    7'b0100100, // 2
-    7'b0110000, // 3
-    7'b0011001, // 4
-    7'b0010010, // 5
-    7'b0000010, // 6
-    7'b1111000, // 7
-    7'b0000000, // 8
-    7'b0010000, // 9
-    7'b0001000, // A
-    7'b0000011, // b
-    7'b1000110, // C
-    7'b0100001, // d
-    7'b0000110, // E
-    7'b0001110  // F
-  ];
+    wire num  of bit(4);
+    wire code of bit(7);
+    code <> MUX(4) <> [
+        num,
+        7'b1000000, // 0
+        7'b1111001, // 1
+        7'b0100100, // 2
+        7'b0110000, // 3
+        7'b0011001, // 4
+        7'b0010010, // 5
+        7'b0000010, // 6
+        7'b1111000, // 7
+        7'b0000000, // 8
+        7'b0010000, // 9
+        7'b0001000, // A
+        7'b0000011, // b
+        7'b1000110, // C
+        7'b0100001, // d
+        7'b0000110, // E
+        7'b0001110  // F
+    ];
+}
+
+enum LCD_STATE {
+    LCD_BOOT0  = 4'b0001,  // Initial power-on state, wait >40ms
+    LCD_BOOT1  = 4'b0010,  // Second power-on state, wait >40ms
+    LCD_BOOT2  = 4'b0011,  // Third power-on state, wait >4.1ms
+    LCD_FUNC   = 4'b0100,   // Function set: 8-bit interface, 2 lines, 5x8 dots
+    LCD_ON_CMD = 4'b0101, // Display on/off control: display on, cursor off, blink off
+    LCD_CLEAR  = 4'b0110,  // Clear display
+    LCD_ENTRY  = 4'b0111,  // Entry mode set: increment, no shift
+    LCD_ADDR   = 4'b1100,   // Set DDRAM address (for subsequent character writes)
+    LCD_CHAR   = 4'b1111    // Write character to DDRAM at current address, then increment address
+}
+
+enum HD44780_CMD {
+    CMD_CLEAR          = 8'h01,
+    CMD_HOME           = 8'h02,
+    CMD_ENTRY_MODE     = 8'h06,
+    CMD_DISPLAY_CTRL   = 8'h0c,
+    CMD_FUNC_SET       = 8'h38,
+    CMD_SET_DDRAM_ADDR = 8'h80,
+    CMD_BOOT_FUNC      = 8'h30
+}
+
+/**
+  * On-board LCD driver for a 16x2 HD44780-compatible character LCD. 
+  * This block implements a simple FSM to initialize the LCD and then continuously update the
+  * display based on a shadow text RAM that the CPU can write to via MMIO.
+  * The CPU can write ASCII character codes to the text RAM, and the LCD driver will handle
+  * the necessary command sequences to update the display.
+  *
+  * @port clk         Clock signal
+  * @port rst         Reset signal
+  * @port core_addr   Address bus from the CPU for MMIO access
+  * @port core_wdata  Write data bus from the CPU for MMIO access
+  * @port core_op     Operation type from the CPU (e.g., byte/halfword/word access)
+  * @port core_we     Write enable signal from the CPU for MMIO access
+  *
+  * @port core_rdata  Read data bus to the CPU for MMIO access
+  * @port mmio_hit    Signal indicating that the current MMIO access is targeting the LCD driver
+  * @port lcd_data    8-bit data bus to the LCD (commands or character data)
+  * @port lcd_blon    Backlight on signal to the LCD
+  * @port lcd_en      Enable signal to the LCD (active high pulse)
+  * @port lcd_on      Power on signal to the LCD
+  * @port lcd_rs      Register select signal to the LCD (0 for command, 1 for data)
+  * @port lcd_rw      Read/write signal to the LCD (0 for write, 1 for read)
+  */
+component LCD_DRIVER : [
+    clk, rst, core_addr, core_wdata, core_op, core_we
+] -> [
+    core_rdata, mmio_hit,
+    lcd_data, lcd_blon, lcd_en, lcd_on, lcd_rs, lcd_rw
+] {
+    wire clk of clock();
+    wire rst, core_we, mmio_hit of bit(1);
+    wire core_addr, core_wdata, core_rdata of bit(32);
+    wire core_op of bit(3);
+    wire lcd_data of bit(8);
+    wire lcd_blon, lcd_en, lcd_on, lcd_rs, lcd_rw of bit(1);
+
+    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+    let write_op = OR <> [
+        EQ <> [core_op, 3'b000], 
+        EQ <> [core_op, 3'b001], 
+        EQ <> [core_op, 3'b010]
+    ];
+
+    // MMIO decode: 0x80000000 page for LCD status/control/text window.
+    auto lcd_page <> AND <> [
+        core_addr[31], 
+        EQ <> [
+            CONCAT <> [8'h00, core_addr[31:8]], 
+            32'h00800000
+        ]
+    ];
+
+    // Control signals for the LCD's HD44780-compatible interface. 
+    auto lcd_status_sel <> AND <> [lcd_page, EQ <> [core_addr[7:0], 8'h00 ]];
+    auto lcd_ctrl_sel   <> AND <> [lcd_page, EQ <> [core_addr[7:0], 8'h04 ]];
+    auto lcd_text_sel   <> AND <> [lcd_page, EQ <> [core_addr[7:5], 3'b001]];
+
+    mmio_hit <> OR <> [lcd_status_sel, lcd_ctrl_sel, lcd_text_sel];
+
+    // LCD controller state: boot sequence, init commands, then DDRAM scan.
+    wire lcd_index of bit(5);
+    wire lcd_state of LCD_STATE;
+    wire lcd_phase of bit(2);
+    wire lcd_wait  of bit(24);
+
+    // CPU-visible text shadow RAM. Software writes bytes here; the LCD FSM later
+    // turns them into HD44780 DDRAM transactions.
+    auto lcd_clear_req    <> AND    <> [lcd_ctrl_sel, core_we, core_wdata[0]];
+    auto text_ram_wr_addr <> MUX(1) <> [lcd_clear_req, core_addr[4:0],  5'd0 ];
+    auto text_ram_wr_data <> MUX(1) <> [lcd_clear_req, core_wdata[7:0], 8'h20];
+
+    // LCD text RAM: 32 bytes for a 16x2 display, initialized to spaces (0x20).
+    auto [cpu_lcd_byte, scan_lcd_byte] <> BYTE_RAM(capacity=5, rst_value=8'h20) <> {
+        clk       : clk,
+        rst       : rst,
+        rd_addr_a : core_addr[4:0],
+        rd_addr_b : lcd_index,
+        wr_en     : OR <> [
+            AND <> [lcd_text_sel, core_we, write_op], 
+            lcd_clear_req
+        ],
+        wr_addr   : text_ram_wr_addr,
+        din       : text_ram_wr_data
+    };
+
+    // line 0 or line 1
+    auto lcd_addr_base <> MUX(1) <> [
+        lcd_index[4], 
+        CMD_SET_DDRAM_ADDR,
+        ADD <> [CMD_SET_DDRAM_ADDR, 8'h40]
+    ];
+
+    // Convert the scan index into the proper DDRAM address for a 16x2 display.
+    lcd_data <> MUX(4) <> {
+        sel : lcd_state,
+        case[LCD_BOOT0]  : CMD_BOOT_FUNC,
+        case[LCD_BOOT1]  : CMD_BOOT_FUNC, 
+        case[LCD_BOOT2]  : CMD_BOOT_FUNC,
+        case[LCD_FUNC]   : CMD_FUNC_SET,
+        case[LCD_ON_CMD] : CMD_DISPLAY_CTRL,
+        case[LCD_CLEAR]  : CMD_CLEAR,
+        case[LCD_ENTRY]  : CMD_ENTRY_MODE,
+        case[LCD_ADDR]   : ADD <> [lcd_addr_base, UCAST(8) <> lcd_index[3:0]],
+        case[LCD_CHAR]   : scan_lcd_byte,
+        default          : CMD_FUNC_SET
+    };
+
+    // LCD transaction timing is split into setup / pulse / hold phases so the
+    // generated waveform stays close to the proven wrapper-side test driver.
+    auto lcd_step    <> NOR <> [lcd_wait[i] | i in [0..24]];   // Advance the timing sub-phase
+    auto lcd_advance <> AND <> [EQ <> [lcd_phase, 2'd3], lcd_step]; // Advance the main FSM state
+
+    lcd_phase <> reg(2'd0) <> MUX(1) <> [
+        lcd_step, 
+        lcd_phase, 
+        MUX(2) <> {
+            sel : lcd_phase,
+            case[2'd0] : 2'd1,
+            case[2'd1] : 2'd2,
+            case[2'd2] : 2'd3,
+            case[2'd3] : 2'd1
+        }
+    ];
+
+    lcd_wait <> reg(24'd5000000) <> MUX(1) <> [
+        lcd_step,
+        SUB <> [lcd_wait, 24'd1],
+        MUX(2) <> {
+            sel : lcd_phase,
+            case[2'd0] : 24'd5000,
+            case[2'd1] : 24'd5000,
+            case[2'd2] : 24'd5000,
+            case[2'd3] : MUX(1) <> [
+                NOT <> lcd_state[2], // Not in boot states
+                MUX(1) <> {
+                    sel     : EQ <> [lcd_state, LCD_CLEAR], 
+                    case[0] : 24'd50000, 
+                    case[1] : 24'd300000
+                },
+                MUX(4) <> {
+                    sel : lcd_state,
+                    case[LCD_BOOT0] : 24'd500000,
+                    case[LCD_BOOT1] : 24'd500000,
+                    case[LCD_BOOT2] : 24'd100000,
+                    default : 24'd50000
+                }
+            ]
+        }
+    ];
+
+    lcd_state <> reg(LCD_BOOT0) <> MUX(1) <> [
+        lcd_advance, 
+        lcd_state, 
+        MUX(4) <> {
+            sel              : lcd_state,
+            case[LCD_BOOT0]  : LCD_BOOT1,
+            case[LCD_BOOT1]  : LCD_BOOT2,
+            case[LCD_BOOT2]  : LCD_FUNC,
+            case[LCD_FUNC]   : LCD_ON_CMD,
+            case[LCD_ON_CMD] : LCD_CLEAR,
+            case[LCD_CLEAR]  : LCD_ENTRY,
+            case[LCD_ENTRY]  : LCD_ADDR,
+            case[LCD_ADDR]   : LCD_CHAR,
+            case[LCD_CHAR]   : LCD_ADDR,
+            default          : LCD_FUNC
+        }
+    ];
+
+    lcd_index <> reg(5'd0) <> MUX(1) <> [
+        AND <> [lcd_advance, EQ <> [lcd_state, LCD_CHAR]],
+        lcd_index,
+        MUX(1) <> [
+            EQ <> [lcd_index, 5'd31],
+            ADD <> [lcd_index, 5'd1], 
+            5'd0
+        ]
+    ];
+
+    lcd_blon <> reg(1'b0) <> lcd_blon;
+    lcd_on   <> reg(1'b1) <> lcd_on;
+    lcd_rw   <> reg(1'b0) <> lcd_rw;
+    lcd_rs   <> EQ <> [lcd_state, LCD_CHAR];
+    lcd_en   <> EQ <> [lcd_phase, 2'd2];
+
+    // MMIO readback lets software inspect a little LCD state without needing
+    // special instructions or debug hardware.
+    auto mmio_word <> OR(3) <> [
+        MUX(1) <> [
+            lcd_status_sel, 32'd0, 
+            UCAST(32) <> CONCAT <> [ 
+                EQ <> [lcd_phase, 2'd3], 
+                EQ <> [lcd_state, LCD_ADDR], 
+                EQ <> [lcd_state, LCD_CLEAR]
+            ]
+        ],
+        MUX(1) <> [
+            lcd_ctrl_sel, 32'd0, 
+            UCAST(32) <> CONCAT <> [lcd_index, lcd_clear_req]
+        ],
+        MUX(1) <> [
+            lcd_text_sel, 32'd0, 
+            UCAST(32) <> cpu_lcd_byte
+        ]
+    ];
+
+    core_rdata <> MUX(3) <> {
+        sel : core_op,
+        case[3'b000] : CAST(32) <> mmio_word[7:0],
+        case[3'b001] : CAST(32) <> mmio_word[15:0],
+        case[3'b010] : mmio_word,
+        case[3'b100] : CAST(32) <> mmio_word[7:0],
+        case[3'b101] : CAST(32) <> mmio_word[15:0],
+        default      : mmio_word
+    };
+}   
+
+component BYTE_RAM(capacity, rst_value) : [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> [dout_a, dout_b] {
+    wire clk of clock();
+    wire rst, wr_en of bit(1);
+    wire rd_addr_a, rd_addr_b, wr_addr of bit(capacity);
+    wire din, dout_a, dout_b of bit(8);
+
+    let W = 2**capacity;
+    wire data[W] of bit(8);
+    wire wr_mask of bit(W);
+    wr_mask <> DECODER(capacity) <> wr_addr;
+
+    for i in [0..W] {
+        data[i] <> REG(pos_edge=true, high_rst=true, rst_value=rst_value) <> [
+            clk, rst,
+            MUX(1) <> [AND <> [wr_mask[i], wr_en], data[i], din]
+        ];
+    }
+
+    dout_a <> MUX(capacity) <> [rd_addr_a] ++ [data[i] | i in [0..W]];
+    dout_b <> MUX(capacity) <> [rd_addr_b] ++ [data[i] | i in [0..W]];
 }

@@ -4,69 +4,48 @@
 
 module rv32i_fpga(
 
-    //////////// CLOCK //////////
-    input                    CLOCK_50,
-    input                    CLOCK2_50,
-    input                    CLOCK3_50,
+	//////////// CLOCK //////////
+	input 		          		CLOCK_50,
+	input 		          		CLOCK2_50,
+	input 		          		CLOCK3_50,
 
-    //////////// LED //////////
-    output        [8:0]      LEDG,
-    output        [17:0]     LEDR,
+	//////////// LED //////////
+output		     [8:0]		LEDG,
+	output		    [17:0]		LEDR,
 
-    //////////// KEY //////////
-    input         [3:0]      KEY,
+	//////////// KEY //////////
+	input 		     [3:0]		KEY,
 
-    //////////// SW //////////
-    input         [17:0]     SW,
+	//////////// SW //////////
+	input 		    [17:0]		SW,
 
-    //////////// SEG7 //////////
-    output        [6:0]      HEX0,
-    output        [6:0]      HEX1,
-    output        [6:0]      HEX2,
-    output        [6:0]      HEX3,
-    output        [6:0]      HEX4,
-    output        [6:0]      HEX5,
-    output        [6:0]      HEX6,
-    output        [6:0]      HEX7,
+	//////////// SEG7 //////////
+	output		     [6:0]		HEX0,
+	output		     [6:0]		HEX1,
+	output		     [6:0]		HEX2,
+	output		     [6:0]		HEX3,
+	output		     [6:0]		HEX4,
+	output		     [6:0]		HEX5,
+	output		     [6:0]		HEX6,
+	output		     [6:0]		HEX7,
 
-    //////////// LCD //////////
-    output                   LCD_BLON,
-    inout         [7:0]      LCD_DATA,
-    output                   LCD_EN,
-    output                   LCD_ON,
-    output                   LCD_RS,
-    output                   LCD_RW,
+	//////////// LCD //////////
+	output		          		LCD_BLON,
+	inout 		     [7:0]		LCD_DATA,
+	output		          		LCD_EN,
+	output		          		LCD_ON,
+	output		          		LCD_RS,
+	output		          		LCD_RW,
 
-    //////////// SDRAM //////////
-    output        [12:0]     DRAM_ADDR,
-    output        [1:0]      DRAM_BA,
-    output                   DRAM_CAS_N,
-    output                   DRAM_CKE,
-    output                   DRAM_CLK,
-    output                   DRAM_CS_N,
-    inout         [31:0]     DRAM_DQ,
-    output        [3:0]      DRAM_DQM,
-    output                   DRAM_RAS_N,
-    output                   DRAM_WE_N,
+	//////////// USB 2.0 OTG (Cypress CY7C67200) //////////
+	output		     [1:0]		OTG_ADDR,
+	output		          		OTG_CS_N,
+	inout 		    [15:0]		OTG_DATA,
+	input 		          		OTG_INT,
+	output		          		OTG_RD_N,
+	output		          		OTG_RST_N,
+	output		          		OTG_WE_N
 
-    //////////// SRAM //////////
-    output        [19:0]     SRAM_ADDR,
-    output                   SRAM_CE_N,
-    inout         [15:0]     SRAM_DQ,
-    output                   SRAM_LB_N,
-    output                   SRAM_OE_N,
-    output                   SRAM_UB_N,
-    output                   SRAM_WE_N,
-
-    //////////// Flash //////////
-    output        [22:0]     FL_ADDR,
-    output                   FL_CE_N,
-    inout         [7:0]      FL_DQ,
-    output                   FL_OE_N,
-    output                   FL_RST_N,
-    input                    FL_RY,
-    output                   FL_WE_N,
-    output                   FL_WP_N
 );
 
 //=======================================================
@@ -87,11 +66,14 @@ wire        dmemWe;
 
 // Raw RAM-side data signals
 wire [31:0] dmemRawOut;
+wire [31:0] dmemRamOut;
+wire [31:0] dmemMmioOut;
 wire [31:0] dmemRamIn;
 wire [3:0]  dmemByteEn;
 wire [14:0] dmemRdAddr;
 wire [14:0] dmemWrAddr;
 wire        dmemRamWe;
+wire        dmemMmioHit;
 
 //=======================================================
 //  Structural coding
@@ -115,6 +97,13 @@ end
 assign clk = CLOCK_50;
 assign rst = SW[0];
 assign LEDR[17:0] = imemAddr[17:0];
+assign LEDG = 9'b0;
+assign OTG_ADDR  = 2'b00;
+assign OTG_CS_N  = 1'b1;
+assign OTG_RD_N  = 1'b1;
+assign OTG_RST_N = 1'b1;
+assign OTG_WE_N  = 1'b1;
+assign OTG_DATA  = 16'hzzzz;
 
 //=======================================================
 //  Core
@@ -140,6 +129,23 @@ CORE my_core(
     HEX7
 );
 
+LCD_DRIVER lcd_driver(
+    clk,
+    rst,
+    dmemAddr,
+    dmemDataIn,
+    dmemOp,
+    dmemWe,
+    dmemMmioOut,
+    dmemMmioHit,
+    LCD_DATA,
+    LCD_BLON,
+    LCD_EN,
+    LCD_ON,
+    LCD_RS,
+    LCD_RW
+);
+
 //=======================================================
 //  Data memory adapter
 //=======================================================
@@ -149,7 +155,7 @@ rv32i_data_mem_adapter dmem_adapter (
     .core_wdata(dmemDataIn),
     .core_op(dmemOp),
     .core_we(dmemWe),
-    .core_rdata(dmemDataOut),
+    .core_rdata(dmemRamOut),
 
     .ram_rdaddress(dmemRdAddr),
     .ram_wraddress(dmemWrAddr),
@@ -158,6 +164,8 @@ rv32i_data_mem_adapter dmem_adapter (
     .ram_wren(dmemRamWe),
     .ram_rdata(dmemRawOut)
 );
+
+assign dmemDataOut = dmemMmioHit ? dmemMmioOut : dmemRamOut;
 
 //=======================================================
 //  Memories
@@ -170,7 +178,7 @@ ram_a data_mem(
     .rdclock(~clk),
     .wraddress(dmemWrAddr),
     .wrclock(~clk),
-    .wren(dmemRamWe),
+    .wren(dmemRamWe && !dmemMmioHit),
     .q(dmemRawOut)
 );
 

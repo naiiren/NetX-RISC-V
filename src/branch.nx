@@ -2,8 +2,16 @@ application rv32i;
 
 /**
   * Branch Condition Evaluator
+  *
   * This component takes the branch type and the results of comparisons from the EX stage and determines if a branch is taken.
   * It outputs control signals for the PC source muxes to select between sequential execution, predicted targets, or resolved targets.
+  *
+  * @port branch      Encoded branch type from the decoder (3 bits)
+  * @port zero        Zero flag from the EX stage (1 bit)
+  * @port less        Set-less-than flag from the EX stage (1 bit)
+  *
+  * @port PCAsrc      Control signal for the PC source mux (1 bit)
+  * @port PCBsrc      Control signal for the PC source mux (1 bit)
 */
 component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
     wire branch         of bit(3);
@@ -25,8 +33,16 @@ component BRANCH_COND : [branch, zero, less] -> [PCAsrc, PCBsrc] {
 
 /**
   * Branch Comparator
+  *
   * Computes equality plus signed/unsigned less-than for two 32-bit operands.
   * This is useful when control-flow resolution should avoid the main ALU/forwarding cone.
+  * 
+  * @port a         First operand (32 bits)
+  * @port b         Second operand (32 bits)
+  *
+  * @port eq        Equality flag output (1 bit)
+  * @port ltu       Unsigned less-than flag output (1 bit)
+  * @port lts       Signed less-than flag output (1 bit)
 */
 component BRANCH_COMPARE : [a, b] -> [eq, ltu, lts] {
     wire a, b of bit(32);
@@ -45,28 +61,44 @@ component BRANCH_COMPARE : [a, b] -> [eq, ltu, lts] {
 
 /**
   * Branch Predictor
+  *
   * Branch predictor with a tiny BTB and 2-bit saturating counters.
   * Direct JAL is predicted taken in decode. Conditional branches use BTB state.
   * JALR remains EX-resolved.
+  *
+  * @port clk             Predictor state update clock.
+  * @port rst             Synchronous reset for BTB entries and counters.
+  * @port valid           Marks the decode-stage query as a real instruction.
+  * @port branch          Encoded control-flow kind from the decoder.
+  * @port pc              PC of the instruction being queried.
+  * @port imm             Decoded immediate used for direct JAL targets.
+  * @port update_valid    EX-stage result is valid and may train the predictor.
+  * @port update_branch   Resolved control-flow kind from EX.
+  * @port update_pc       PC of the resolved branch/jump used to index the BTB.
+  * @port update_taken    Actual taken/not-taken outcome from EX.
+  * @port update_target   Actual next PC when the resolved control flow is taken.
+  *
+  * @port pred_taken      Predictor decision for the decode-stage instruction.
+  * @port pred_target     Predicted target PC when pred_taken is asserted.
+
 */
 component BRANCH_PREDICTOR : [
     clk, rst, valid, branch, pc, imm,
     update_valid, update_branch, update_pc, update_taken, update_target
 ] -> [pred_taken, pred_target] {
-    wire clk            of clock(); // Predictor state update clock.
-    wire rst            of bit(1);  // Synchronous reset for BTB entries and counters.
-    wire valid          of bit(1);  // Marks the decode-stage query as a real instruction.
-    wire branch         of bit(3);  // Encoded control-flow kind from the decoder.
-    wire pc             of bit(32); // PC of the instruction being queried.
-    wire imm            of bit(32); // Decoded immediate used for direct JAL targets.
-    wire update_valid   of bit(1);  // EX-stage result is valid and may train the predictor.
-    wire update_branch  of bit(3);  // Resolved control-flow kind from EX.
-    wire update_pc      of bit(32); // PC of the resolved branch/jump used to index the BTB.
-    wire update_taken   of bit(1);  // Actual taken/not-taken outcome from EX.
-    wire update_target  of bit(32); // Actual next PC when the resolved control flow is taken.
-
-    wire pred_taken     of bit(1);  // Predictor decision for the decode-stage instruction.
-    wire pred_target    of bit(32); // Predicted target PC when pred_taken is asserted.
+    wire clk            of clock(); 
+    wire rst            of bit(1);  
+    wire valid          of bit(1);  
+    wire branch         of bit(3);  
+    wire pc             of bit(32); 
+    wire imm            of bit(32); 
+    wire update_valid   of bit(1);  
+    wire update_branch  of bit(3);  
+    wire update_pc      of bit(32); 
+    wire update_taken   of bit(1);  
+    wire update_target  of bit(32); 
+    wire pred_taken     of bit(1);  
+    wire pred_target    of bit(32); 
 
     let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
 

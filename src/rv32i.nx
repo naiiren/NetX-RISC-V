@@ -2,11 +2,11 @@ application rv32i;
 
 import std.selector.*;
 import std.utils.REG;
-import std.arith.BARREL_SHIFTER;
 
 
 /**
   * RV32I Core
+  *
   * This component implements a 5-stage pipelined RV32I core with basic branch prediction and bypassing.
   * It interfaces with external instruction and data memory and includes a simple control path for handling hazards and redirects.
   * The design includes the following pipeline stages:
@@ -15,6 +15,18 @@ import std.arith.BARREL_SHIFTER;
   * - EX: ALU execution and branch resolution.
   * - MEM: Data memory access.
   * - WB: Register file writeback.
+  *
+  * @port clk         Clock signal
+  * @port rst         Reset signal
+  * @port instr       Instruction input from instruction memory
+  * @port dmem_out    Data output from data memory
+  *
+  * @port imem_addr   Address output to instruction memory
+  * @port dmem_addr   Address output to data memory
+  * @port dmem_in     Data input to data memory
+  * @port dmem_op     Memory operation code output to data memory
+  * @port dmem_wr     Data memory write enable output
+  * @port SSD         Seven-segment display output for observation
 */
 component CORE : [clk, rst, instr, dmem_out] -> [
     imem_addr, dmem_addr, dmem_in, dmem_op, dmem_wr, SSD
@@ -413,6 +425,12 @@ interface CTL_SIGNAL_SET : [ext_op, reg_wr, rs1_used, rs2_used, branch, mem_to_r
   * Instruction Decoder
   * This component takes the opcode and function fields from the instruction and generates the appropriate control signals.
   * It also determines the type of immediate to generate and the ALU operation to perform.
+  *
+  * @port op_i   The opcode field of the instruction (bits [6:0])
+  * @port func3  The func3 field of the instruction (bits [14:12])
+  * @port func7  The func7 field of the instruction (bit [30])
+  *
+  * @port ctl    The set of control signals generated based on the instruction type
 */
 component INSTR_DECODER : [op_i, func3, func7] -> [ctl] {
     wire op_i  of bit(7);
@@ -496,7 +514,13 @@ component INSTR_DECODER : [op_i, func3, func7] -> [ctl] {
 
 /*
   * Immediate Selector
+  *
   * This component generates the appropriate immediate value based on the instruction format.
+  *
+  * @port ext_op  The type of immediate to generate, as determined by the instruction decoder.
+  * @port instr   The raw instruction bits from which to extract the immediate.
+  *
+  * @port imm     The generated immediate value, sign-extended to 32 bits as needed.
 */
 component IMM_SELECTOR: [ext_op, instr] -> [imm] {
     wire ext_op of bit(3);
@@ -520,6 +544,30 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
     };
 }
 
+/**
+  * Register File
+  *
+  * This component implements a register file with a specified width and capacity.
+  * It supports two asynchronous read ports and one synchronous write port.
+  * Register x0 is hardwired to zero and ignores writes.
+  *
+  * @param width       The bit-width of each register (e.g., 32 for RV32I).
+  * @param capacity    The number of address bits for the register file (e.g., 5 for 32 registers).
+  * @param pos_edge    Whether the write occurs on the positive clock edge (true) or negative edge (false).
+  * @param high_rst    Whether the reset is active-high (true) or active-low (false).
+  *
+  * @port clk        Clock signal for synchronizing writes.
+  * @port rst        Reset signal to initialize registers to zero.
+  * @port rd_addr_a  Read address for port A.
+  * @port rd_addr_b  Read address for port B.
+  * @port wr_en      Write enable signal for the write port.
+  * @port wr_addr    Write address for the write port.
+  * @port din        Data input for the write port.
+  *
+  * @port dout_a     Data output from read port A.
+  * @port dout_b     Data output from read port B.
+  * @port data[10]   The internal x10 register value for observation
+  */
 component REG_FILE(width, capacity, pos_edge, high_rst) : 
     [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> [dout_a, dout_b, data[10]] {
     wire clk of clock();

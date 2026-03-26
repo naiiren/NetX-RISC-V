@@ -2,9 +2,18 @@ application rv32i;
 
 /**
   * ALU Component
+  *
   * This component implements the Arithmetic Logic Unit (ALU) for the RV32I architecture. 
   * It performs various arithmetic and logical operations based on the control signals provided by the ALU controller.
   * The ALU supports addition, subtraction, logical shifts, bitwise operations, and set-less-than comparisons.
+  *
+  * @port a         First input operand (32 bits)
+  * @port b         Second input operand (32 bits)
+  * @port alu_ctl    ALU control signal (4 bits)
+  *
+  * @port result     ALU result output (32 bits)
+  * @port zero       Zero flag output (1 bit)
+  * @port less       Set-less-than flag output (1 bit)
 */
 component ALU : [a, b, alu_ctl] -> [result, zero, less] {
     wire a, b       of bit(32);
@@ -46,11 +55,14 @@ component ALU : [a, b, alu_ctl] -> [result, zero, less] {
   * ALU Controller
   * This component generates the control signals for the ALU based on the ALU control input from the instruction decoder.
   * It decodes the ALU control signal to determine the operation type, shift direction, and whether to use arithmetic shifts.
-  * - opcode: Determines the specific ALU operation to perform (e.g., add, shift, set-less-than).
-  * - AL: Indicates if the operation is an arithmetic or logical shift.
-  * - LR: Determines the direction of the shift (left or right).
-  * - US: Indicates if the set-less-than operation should be unsigned.
-  * - cin: Carry-in for addition operations, which is used for subtraction and set-less-than comparisons.
+  *
+  * @port alu_ctl    ALU control signal (4 bits)
+  *
+  * @port opcode     ALU operation code (3 bits)
+  * @port AL         Arithmetic/Logical shift flag
+  * @port LR         Shift direction flag
+  * @port US         Unsigned set-less-than flag
+  * @port cin        Carry-in for addition operations
 */
 component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
     auto opcode <> alu_ctl[2:0];
@@ -62,11 +74,21 @@ component ALU_CONTROLLER : [alu_ctl] -> [opcode, AL, LR, US, cin] {
 
 /**
   * Adder Component
+  *
   * This component implements a 32-bit adder using a carry-lookahead approach for efficient addition.
   * It takes two 32-bit inputs (a and b) and a carry-in (cin) to produce a 32-bit sum, a carry-out, a zero flag, and an overflow flag.
   * The zero flag indicates if the result of the addition is zero, while the overflow flag indicates if there was an overflow during the addition.
   *
   * The adder is composed of four 8-bit carry-lookahead adders (CLA) that are chained together to handle the 32-bit addition.
+  *
+  * @port a         First input operand (32 bits)
+  * @port b         Second input operand (32 bits)
+  * @port cin       Carry-in (1 bit)
+  *
+  * @port sum       Sum output (32 bits)
+  * @port carry     Carry-out (1 bit)
+  * @port zero      Zero flag (1 bit)
+  * @port overflow  Overflow flag (1 bit)
 */
 component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
     wire a, b, sum                  of bit(32);
@@ -95,8 +117,18 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
 
 /**
   * Carry-Lookahead Adder Component
+  *
   * This component implements a n-bit adder using a carry-lookahead approach for efficient addition.
   * It takes two n-bit inputs (a and b) and a carry-in (cin) to produce a n-bit sum and a carry-out.
+  *
+  * @attr n         Bit-width of the adder (max 32)
+  *
+  * @port a         First input operand
+  * @port b         Second input operand
+  * @port cin       Carry-in
+  *
+  * @port sum       Sum output
+  * @port carry     Carry-out
 */
 component CLA(n) : [a, b, cin] -> [sum, carry] {
     wire a, b, sum  of bit(n);
@@ -112,4 +144,45 @@ component CLA(n) : [a, b, cin] -> [sum, carry] {
         sum[i] <> XOR <> [a[i], b[i], C(i)];
     }
     carry <> C(n);
+}
+
+/**
+  * Barrel Shifter
+  *
+  * This component performs barrel shifting on a data input.
+  *
+  * @attr stage     Number of stages (log2(width))
+  *
+  * @port din       Input data
+  * @port shamt     Shift amount
+  * @port dir       Shift direction (0 = left, 1 = right)
+  * @port arith     Arithmetic shift flag
+  *
+  * @port dout      Output data
+  */
+component BARREL_SHIFTER(stage) : [din, shamt, dir, arith] -> [dout] {
+  let width = 2 ** stage;
+
+  wire din, dout  of bit(width);
+  wire shamt      of bit(stage);
+  wire dir, arith of bit(1);
+
+  auto sign_bit <> MUX(1) <> [arith, 1'b0, din[width - 1]];
+
+  wire result[stage]  of bit(width);
+  for i in [0..stage] {
+      for j in [0..width] {
+          let offset = 2 ** i;
+
+          let last = (if i == 0 then din else result[i - 1]);
+          let next_left  = if j >= offset        then last[j - offset] else 1'b0;
+          let next_right = if j + offset < width then last[j + offset] else sign_bit;
+          result[i][j] <> MUX(2) <> [
+              CONCAT <> [dir, shamt[i]],
+              last[j], next_left,
+              last[j], next_right
+          ];
+      }
+  }
+  dout <> result[stage - 1];
 }
