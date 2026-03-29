@@ -28,25 +28,25 @@ component HEX_TO_7SEG: [num] -> [code] {
 }
 
 enum LCD_STATE {
-    LCD_BOOT0  = 4'b0001,  // Initial power-on state, wait >40ms
-    LCD_BOOT1  = 4'b0010,  // Second power-on state, wait >40ms
-    LCD_BOOT2  = 4'b0011,  // Third power-on state, wait >4.1ms
-    LCD_FUNC   = 4'b0100,   // Function set: 8-bit interface, 2 lines, 5x8 dots
+    LCD_BOOT0  = 4'b0001, // Initial power-on state, wait >40ms
+    LCD_BOOT1  = 4'b0010, // Second power-on state, wait >40ms
+    LCD_BOOT2  = 4'b0011, // Third power-on state, wait >4.1ms
+    LCD_FUNC   = 4'b0100, // Function set: 8-bit interface, 2 lines, 5x8 dots
     LCD_ON_CMD = 4'b0101, // Display on/off control: display on, cursor off, blink off
-    LCD_CLEAR  = 4'b0110,  // Clear display
-    LCD_ENTRY  = 4'b0111,  // Entry mode set: increment, no shift
-    LCD_ADDR   = 4'b1100,   // Set DDRAM address (for subsequent character writes)
-    LCD_CHAR   = 4'b1111    // Write character to DDRAM at current address, then increment address
+    LCD_CLEAR  = 4'b0110, // Clear display
+    LCD_ENTRY  = 4'b0111, // Entry mode set: increment, no shift
+    LCD_ADDR   = 4'b1100, // Set DDRAM address (for subsequent character writes)
+    LCD_CHAR   = 4'b1111  // Write character to DDRAM at current address, then increment address
 }
 
 enum HD44780_CMD {
-    CMD_CLEAR          = 8'h01,
-    CMD_HOME           = 8'h02,
-    CMD_ENTRY_MODE     = 8'h06,
-    CMD_DISPLAY_CTRL   = 8'h0c,
-    CMD_FUNC_SET       = 8'h38,
-    CMD_SET_DDRAM_ADDR = 8'h80,
-    CMD_BOOT_FUNC      = 8'h30
+    CMD_CLEAR          = 8'h01, // Clear display and return cursor to home position
+    CMD_HOME           = 8'h02, // Return cursor to home position (0,0) without clearing display
+    CMD_ENTRY_MODE     = 8'h06, // Set entry mode: increment cursor, no display shift
+    CMD_DISPLAY_CTRL   = 8'h0c, // Display on, cursor off, blink off
+    CMD_FUNC_SET       = 8'h38, // Function set: 8-bit interface, 2 lines, 5x8 dots
+    CMD_SET_DDRAM_ADDR = 8'h80, // Set DDRAM address command; OR with address (0-8'h7F) to set cursor position
+    CMD_BOOT_FUNC      = 8'h30  // Basic function set used during the boot sequence to ensure the LCD is in 8-bit mode
 }
 
 /**
@@ -92,7 +92,7 @@ component LCD_DRIVER : [
         EQ <> [core_op, 3'b010]
     ];
 
-    // MMIO decode: 0x80000000 page for LCD status/control/text window.
+    // MMIO decode: 8'h80000000 page for LCD status/control/text window.
     auto lcd_page <> AND <> [
         core_addr[31], 
         EQ <> [
@@ -106,7 +106,7 @@ component LCD_DRIVER : [
     auto lcd_ctrl_sel   <> AND <> [lcd_page, EQ <> [core_addr[7:0], 8'h04 ]];
     auto lcd_text_sel   <> AND <> [lcd_page, EQ <> [core_addr[7:5], 3'b001]];
 
-    mmio_hit <> OR <> [lcd_status_sel, lcd_ctrl_sel, lcd_text_sel];
+    mmio_hit <> OR(3) <> [lcd_status_sel, lcd_ctrl_sel, lcd_text_sel];
 
     // LCD controller state: boot sequence, init commands, then DDRAM scan.
     wire lcd_index of bit(5);
@@ -120,7 +120,7 @@ component LCD_DRIVER : [
     auto text_ram_wr_addr <> MUX(1) <> [lcd_clear_req, core_addr[4:0],  5'd0 ];
     auto text_ram_wr_data <> MUX(1) <> [lcd_clear_req, core_wdata[7:0], 8'h20];
 
-    // LCD text RAM: 32 bytes for a 16x2 display, initialized to spaces (0x20).
+    // LCD text RAM: 32 bytes for a 16x2 display, initialized to spaces (8'h20).
     auto [cpu_lcd_byte, scan_lcd_byte] <> BYTE_RAM(capacity=5, rst_value=8'h20) <> {
         clk       : clk,
         rst       : rst,
@@ -265,6 +265,67 @@ component LCD_DRIVER : [
     };
 }   
 
+/**
+  * PS/2 keyboard front-end. This block captures raw PS/2 scan-code bytes and
+  * exposes them through a small MMIO FIFO:
+  * - 8'h80000080: status {overflow, ready}
+  * - 8'h80000084: data byte (read pops one entry)
+  */
+component PS2_KEYBOARD_DRIVER : [
+    clk, rst, core_addr, core_wdata, core_op, core_we, ps2_clk, ps2_dat
+] -> [
+    core_rdata, mmio_hit
+] {
+    wire clk of clock();
+    wire rst, core_we, ps2_clk, ps2_dat, mmio_hit of bit(1);
+    wire core_addr, core_wdata, core_rdata of bit(32);
+    wire core_op of bit(3);
+
+    auto kbd_page <> AND <> [
+        core_addr[31],
+        EQ <> [
+            CONCAT <> [8'h00, core_addr[31:8]],
+            32'h00800000
+        ]
+    ];
+    auto kbd_status_sel <> AND <> [kbd_page, EQ <> [core_addr[7:0], 8'h80]];
+    auto kbd_data_sel   <> AND <> [kbd_page, EQ <> [core_addr[7:0], 8'h84]];
+
+    auto kbd_pop <> AND <> [kbd_data_sel, NOT <> core_we];
+    auto kbd_overflow_clr <> AND <> [kbd_status_sel, core_we, core_wdata[1]];
+    auto [kbd_data_byte, kbd_ready, kbd_overflow] <> PS2_KEYBOARD <> {
+        clk          : clk,
+        rst          : rst,
+        ps2_clk      : ps2_clk,
+        ps2_dat      : ps2_dat,
+        pop          : kbd_pop,
+        clr_overflow : kbd_overflow_clr
+    };
+
+    mmio_hit <> OR <> [kbd_status_sel, kbd_data_sel];
+
+    auto mmio_word <> OR(2) <> [
+        MUX(1) <> [
+            kbd_status_sel, 32'd0,
+            UCAST(32) <> CONCAT <> [30'd0, kbd_overflow, kbd_ready]
+        ],
+        MUX(1) <> [
+            kbd_data_sel, 32'd0,
+            UCAST(32) <> kbd_data_byte
+        ]
+    ];
+
+    core_rdata <> MUX(3) <> {
+        sel : core_op,
+        case[3'b000] : CAST(32) <> mmio_word[7:0],
+        case[3'b001] : CAST(32) <> mmio_word[15:0],
+        case[3'b010] : mmio_word,
+        case[3'b100] : CAST(32) <> mmio_word[7:0],
+        case[3'b101] : CAST(32) <> mmio_word[15:0],
+        default      : mmio_word
+    };
+}
+
 component BYTE_RAM(capacity, rst_value) : [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> [dout_a, dout_b] {
     wire clk of clock();
     wire rst, wr_en of bit(1);
@@ -285,4 +346,622 @@ component BYTE_RAM(capacity, rst_value) : [clk, rst, rd_addr_a, rd_addr_b, wr_en
 
     dout_a <> MUX(capacity) <> [rd_addr_a] ++ [data[i] | i in [0..W]];
     dout_b <> MUX(capacity) <> [rd_addr_b] ++ [data[i] | i in [0..W]];
+}
+
+/**
+  * PS/2 Keyboard Receiver
+  * This component samples the PS/2 clock/data pair, assembles 11-bit PS/2
+  * frames, and pushes valid scan-code bytes into a small FIFO for software.
+  * The receiver:
+  * - synchronizes the asynchronous PS/2 pins into the system clock domain
+  * - samples data on synchronized falling edges of `ps2_clk`
+  * - checks the frame start/stop bits before accepting a byte
+  * - buffers received bytes so MMIO polling does not lose short bursts
+  *
+  * @port clk           System clock
+  * @port rst           Reset signal
+  * @port ps2_clk       PS/2 clock input from the keyboard
+  * @port ps2_dat       PS/2 data input from the keyboard
+  * @port pop           Removes one byte from the receive FIFO
+  * @port clr_overflow  Clears the sticky FIFO overflow flag
+  *
+  * @port data          Oldest buffered scan-code byte
+  * @port ready         High when at least one byte is available
+  * @port overflow      Sticky flag set when a received byte is dropped
+  */
+component PS2_KEYBOARD : [clk, rst, ps2_clk, ps2_dat, pop, clr_overflow] -> [data, ready, overflow] {
+    wire clk of clock();
+    wire rst, ps2_clk, ps2_dat, pop, clr_overflow of bit(1);
+    wire data of bit(8);
+    wire ready, overflow of bit(1);
+
+    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+
+    // Synchronize the external PS/2 wires into the system clock domain.
+    // The keyboard drives PS2_CLK asynchronously relative to `clk`, so both
+    // lines pass through two registers before the receiver looks at them.
+    //
+    // A PS/2 bit is sampled on each falling edge of PS2_CLK, so the receiver
+    // detects that edge after synchronization and only shifts on `ps2_fall`.
+    wire ps2_clk_meta, ps2_clk_sync, ps2_clk_prev of bit(1);
+    wire ps2_dat_meta, ps2_dat_sync of bit(1);
+    ps2_clk_meta <> reg(1'b1) <> ps2_clk;
+    ps2_clk_sync <> reg(1'b1) <> ps2_clk_meta;
+    ps2_clk_prev <> reg(1'b1) <> ps2_clk_sync;
+    ps2_dat_meta <> reg(1'b1) <> ps2_dat;
+    ps2_dat_sync <> reg(1'b1) <> ps2_dat_meta;
+
+    auto ps2_fall <> AND <> [ps2_clk_prev, NOT <> ps2_clk_sync];
+
+    // Collect one full PS/2 frame:
+    //   start(0), 8 data bits (LSB first), parity, stop(1)
+    //
+    // `frame_shift` keeps the in-flight 11-bit frame. Once bit_count reaches
+    // the last bit on a falling clock edge, `frame_done` goes high and the
+    // receiver checks the start/stop bits before publishing `frame_byte`.
+    wire bit_count of bit(4);
+    wire frame_shift of bit(11);
+    auto frame_shift_next <> MUX(1) <> [ps2_fall, frame_shift, CONCAT <> [ps2_dat_sync, frame_shift[10:1]]];
+    auto frame_done <> AND <> [ps2_fall, EQ <> [bit_count, 4'd10]];
+    auto frame_valid <> AND <> [frame_done, NOT <> frame_shift_next[0], frame_shift_next[10]];
+    auto frame_byte <> frame_shift_next[8:1];
+
+    bit_count <> reg(4'd0) <> MUX(1) <> [
+        ps2_fall,
+        bit_count,
+        MUX(1) <> [frame_done, ADD <> [bit_count, 4'd1], 4'd0]
+    ];
+
+    frame_shift <> reg(11'd0) <> frame_shift_next;
+
+    // Every valid frame is pushed into a tiny FIFO so software can poll the
+    // keyboard MMIO registers without losing back-to-back scan-code bytes.
+    auto push_byte <> frame_valid;
+
+    auto [fifo_data, fifo_ready, fifo_full, fifo_overflow] <> BYTE_FIFO(capacity=2) <> {
+        clk          : clk,
+        rst          : rst,
+        push         : push_byte,
+        din          : frame_byte,
+        pop          : pop,
+        clr_overflow : clr_overflow
+    };
+
+    data <> fifo_data;
+    ready <> fifo_ready;
+    overflow <> fifo_overflow;
+}
+
+component BYTE_FIFO(capacity) : [clk, rst, push, din, pop, clr_overflow] -> [dout, ready, full, overflow] {
+    wire clk of clock();
+    wire rst, push, pop, clr_overflow of bit(1);
+    wire din, dout of bit(8);
+    wire ready, full, overflow of bit(1);
+
+    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+    let DEPTH = 2**capacity;
+
+    wire rd_ptr, wr_ptr of bit(capacity);
+    wire count of bit(capacity + 1);
+
+    auto push_ok <> AND <> [push, NOT <> full];
+    auto pop_ok <> AND <> [pop, ready];
+    auto count_sel <> CONCAT <> [push_ok, pop_ok];
+
+    auto [ram_rd_data, _fifo_unused] <> BYTE_RAM(capacity=capacity, rst_value=8'h00) <> {
+        clk       : clk,
+        rst       : rst,
+        rd_addr_a : rd_ptr,
+        rd_addr_b : wr_ptr,
+        wr_en     : push_ok,
+        wr_addr   : wr_ptr,
+        din       : din
+    };
+
+    ready <> NE <> [count, UCAST(capacity + 1) <> 0];
+    full <> EQ <> [count, UCAST(capacity + 1) <> DEPTH];
+
+    rd_ptr <> reg(0) <> MUX(1) <> [
+        pop_ok,
+        rd_ptr,
+        ADD <> [rd_ptr, UCAST(capacity) <> 1]
+    ];
+
+    wr_ptr <> reg(0) <> MUX(1) <> [
+        push_ok,
+        wr_ptr,
+        ADD <> [wr_ptr, UCAST(capacity) <> 1]
+    ];
+
+    count <> reg(0) <> MUX(2) <> {
+        sel : count_sel,
+        case[2'b00] : count,
+        case[2'b01] : SUB <> [count, UCAST(capacity + 1) <> 1],
+        case[2'b10] : ADD <> [count, UCAST(capacity + 1) <> 1],
+        case[2'b11] : count
+    };
+
+    overflow <> reg(1'b0) <> MUX(1) <> [
+        clr_overflow,
+        MUX(1) <> [AND <> [push, full], overflow, 1'b1],
+        1'b0
+    ];
+
+    dout <> ram_rd_data;
+}
+
+enum VGA_H_STATE {
+    H_VISIBLE = 2'b00, // Active video period where pixels are visible on the screen
+    H_FRONT   = 2'b01, // Front porch period after the visible area, before the sync pulse
+    H_SYNC    = 2'b10, // Sync pulse period where the horizontal sync signal is active
+    H_BACK    = 2'b11  // Back porch period after the sync pulse, before the next visible area
+}
+
+enum VGA_V_STATE {
+    V_VISIBLE = 2'b00, // Active video period where pixels are visible on the screen
+    V_FRONT   = 2'b01, // Front porch period after the visible area, before the sync pulse
+    V_SYNC    = 2'b10, // Sync pulse period where the vertical sync signal is active
+    V_BACK    = 2'b11  // Back porch period after the sync pulse, before the next visible area
+}
+
+/**
+  * VGA text-mode display for a 16:9-friendly 88'h45 character surface.
+  *
+  * The physical output remains standard 648'h480@60Hz for monitor compatibility
+  * from a 25 MHz pixel clock, but the visible content is rendered into a
+  * centered 648'h360 window. That produces the right 16:9 geometry on widescreen
+  * panels while staying within the board's simple clocking setup.
+  *
+  * MMIO / memory map:
+  * - 8'h80000100: status register
+  * - 8'h00018000..8'h00018E0F: CPU-writable text window mirrored by the wrapper
+  *   for VGA scanout (88'h45 bytes, top-left first)
+  */
+component VGA_DRIVER : [
+    clk, rst, core_addr, core_wdata, core_op, core_we, scan_char
+] -> [
+    core_rdata, mmio_hit, scan_addr,
+    vga_r, vga_g, vga_b, vga_blank_n, vga_clk, vga_hs, vga_sync_n, vga_vs
+] {
+    wire clk of clock();
+    wire rst, core_we, mmio_hit of bit(1);
+    wire core_addr, core_wdata, core_rdata of bit(32);
+    wire core_op of bit(3);
+    wire scan_char of bit(8);
+    wire scan_addr of bit(12);
+    wire vga_r, vga_g, vga_b of bit(8);
+    wire vga_blank_n, vga_clk, vga_hs, vga_sync_n, vga_vs of bit(1);
+
+    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
+    auto vga_status_sel <> AND(2) <> [
+        core_addr[31],
+        EQ <> [core_addr, 32'h80000100]
+    ];
+    mmio_hit <> vga_status_sel;
+
+    // The VGA timing state machine runs at the pixel clock, which is half the core clock.
+    wire vga_clk of bit(1);
+    vga_clk <> reg(1'b0) <> NOT <> vga_clk;
+
+    wire h_state of VGA_H_STATE;
+    wire v_state of VGA_V_STATE;
+    wire h_rem, v_rem of bit(10);
+    wire x_pos, y_pos of bit(10);
+
+    auto h_zero <> EQ <> [h_rem, 10'd0];
+    auto v_zero <> EQ <> [v_rem, 10'd0];
+    auto h_wrap <> AND <> [vga_clk, h_zero, EQ <> [h_state, H_BACK]];
+
+    h_state <> reg(H_VISIBLE) <> MUX(1) <> [
+        AND <> [vga_clk, h_zero],
+        h_state,
+        MUX(2) <> {
+            sel : h_state,
+            case[H_VISIBLE] : H_FRONT,
+            case[H_FRONT]   : H_SYNC,
+            case[H_SYNC]    : H_BACK,
+            case[H_BACK]    : H_VISIBLE
+        }
+    ];
+
+    h_rem <> reg(10'd639) <> MUX(1) <> [
+        vga_clk,
+        h_rem,
+        MUX(1) <> [
+            h_zero, 
+            SUB <> [h_rem, 10'd1], // Count down the horizontal pixel position
+            MUX(2) <> {            // Reload the horizontal pixel counter based on the current state
+                sel : h_state,
+                case[H_VISIBLE] : 10'd15,
+                case[H_FRONT]   : 10'd95,
+                case[H_SYNC]    : 10'd47,
+                case[H_BACK]    : 10'd639
+            }
+        ]
+    ];
+
+    v_state <> reg(V_VISIBLE) <> MUX(1) <> [
+        AND <> [h_wrap, v_zero],
+        v_state,
+        MUX(2) <> {
+            sel : v_state,
+            case[V_VISIBLE] : V_FRONT,
+            case[V_FRONT]   : V_SYNC,
+            case[V_SYNC]    : V_BACK,
+            case[V_BACK]    : V_VISIBLE
+        }
+    ];
+
+    v_rem <> reg(10'd479) <> MUX(1) <> [
+        h_wrap,
+        v_rem,
+        MUX(1) <> [
+            v_zero, 
+            SUB <> [v_rem, 10'd1], // Count down the vertical pixel position
+            MUX(2) <> {            // Reload the vertical pixel counter based on the current state
+                sel : v_state,
+                case[V_VISIBLE] : 10'd9,
+                case[V_FRONT]   : 10'd1,
+                case[V_SYNC]    : 10'd32,
+                case[V_BACK]    : 10'd479
+            }
+        ]
+    ];
+
+    auto h_visible <> EQ <> [h_state, H_VISIBLE];
+    auto v_visible <> EQ <> [v_state, V_VISIBLE];
+    auto active_video <> AND <> [h_visible, v_visible];
+
+    x_pos <> reg(10'd0) <> MUX(1) <> [
+        vga_clk,
+        x_pos,
+        MUX(1) <> [
+            h_visible, 10'd0,
+            MUX(1) <> [h_zero, ADD <> [x_pos, 10'd1], 10'd0]
+        ]
+    ];
+
+    y_pos <> reg(10'd0) <> MUX(1) <> [
+        h_wrap,
+        y_pos,
+        MUX(1) <> [
+            v_visible, 10'd0,
+            MUX(1) <> [v_zero, ADD <> [y_pos, 10'd1], 10'd0]
+        ]
+    ];
+
+    auto y_lt_top <> ULT <> [y_pos, 10'd16];
+    auto y_lt_bot <> ULT <> [y_pos, 10'd464];
+
+    auto text_band   <> AND <> [NOT <> y_lt_top, y_lt_bot];
+    auto text_active <> AND <> [active_video, text_band];
+    
+    auto text_y <> SUB <> [y_pos, 10'd16];
+
+    auto cell_x        <> x_pos [9:3];
+    auto cell_y        <> text_y[8:4];
+    auto glyph_col     <> x_pos [2:0];
+    auto glyph_row_sel <> text_y[3:0];
+
+    scan_addr <> ADD(3) <> [
+        UCAST(12) <> CONCAT <> [cell_y, 6'b000000],
+        UCAST(12) <> CONCAT <> [cell_y, 4'b0000],
+        UCAST(12) <> cell_x
+    ];
+
+    // Align the BRAM text byte with the pixel selectors so the glyph decode does
+    // not momentarily see mixed-cycle inputs, which otherwise shows up as sparkles.
+    wire scan_char_q of bit(8);
+    wire glyph_col_q of bit(3);
+    wire glyph_row_q of bit(4);
+    wire active_video_q, text_active_q of bit(1);
+
+    scan_char_q    <> reg(8'h20) <> MUX(1) <> [vga_clk, scan_char_q, scan_char];
+    glyph_col_q    <> reg(3'b000) <> MUX(1) <> [vga_clk, glyph_col_q, glyph_col];
+    glyph_row_q    <> reg(4'b0000) <> MUX(1) <> [vga_clk, glyph_row_q, glyph_row_sel];
+    active_video_q <> reg(1'b0) <> MUX(1) <> [vga_clk, active_video_q, active_video];
+    text_active_q  <> reg(1'b0) <> MUX(1) <> [vga_clk, text_active_q, text_active];
+
+    auto glyph_row_bits <> VGA_GLYPH_ROW <> [scan_char_q, glyph_row_q];
+    auto glyph_bit <> MUX(3) <> [glyph_col_q] ++ [glyph_row_bits[7 - i] | i in [0..8]];
+
+    auto pixel_on <> AND <> [text_active_q, glyph_bit];
+
+    vga_r       <> MUX(1) <> [pixel_on, MUX(1) <> [active_video_q, 8'h00, 8'h18], 8'hff];
+    vga_g       <> MUX(1) <> [pixel_on, MUX(1) <> [active_video_q, 8'h00, 8'h18], 8'hff];
+    vga_b       <> MUX(1) <> [pixel_on, MUX(1) <> [active_video_q, 8'h00, 8'h40], 8'hff];
+    vga_blank_n <> active_video_q;
+    vga_hs      <> NOT <> EQ <> [h_state, H_SYNC];
+    vga_vs      <> NOT <> EQ <> [v_state, V_SYNC];
+    vga_sync_n  <> 1'b0;
+
+    auto mmio_word <> MUX(1) <> [vga_status_sel, 32'd0, 32'h000002d0];
+
+    core_rdata <> MUX(3) <> {
+        sel : core_op,
+        case[3'b000] : CAST(32) <> mmio_word[7:0],
+        case[3'b001] : CAST(32) <> mmio_word[15:0],
+        case[3'b010] : mmio_word,
+        case[3'b100] : CAST(32) <> mmio_word[7:0],
+        case[3'b101] : CAST(32) <> mmio_word[15:0],
+        default      : mmio_word
+    };
+}
+
+/**
+ * VGA character ROM for a simple 8x16 font. This block takes an ASCII character code
+ * and a row index (0-15) and outputs the corresponding 8 bits for that row of the glyph.
+ * The font data is taken from the Linux kernel
+ */
+component VGA_GLYPH_ROW : [ch, row] -> [bits] {
+    wire ch  of bit(8);
+    wire row of bit(4);
+    wire bits of bit(8);
+
+    let font_8x16 = [
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0000
+        [8'h00, 8'h00, 8'h7E, 8'h81, 8'hA5, 8'h81, 8'h81, 8'hBD, 8'h99, 8'h81, 8'h81, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+0001
+        [8'h00, 8'h00, 8'h7E, 8'hFF, 8'hDB, 8'hFF, 8'hFF, 8'hC3, 8'hE7, 8'hFF, 8'hFF, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+0002
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h6C, 8'hFE, 8'hFE, 8'hFE, 8'hFE, 8'h7C, 8'h38, 8'h10, 8'h00, 8'h00, 8'h00, 8'h00], // U+0003
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h10, 8'h38, 8'h7C, 8'hFE, 8'h7C, 8'h38, 8'h10, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0004
+        [8'h00, 8'h00, 8'h00, 8'h18, 8'h3C, 8'h3C, 8'hE7, 8'hE7, 8'hE7, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0005
+        [8'h00, 8'h00, 8'h00, 8'h18, 8'h3C, 8'h7E, 8'hFF, 8'hFF, 8'h7E, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0006
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h3C, 8'h3C, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0007
+        [8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hE7, 8'hC3, 8'hC3, 8'hE7, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF], // U+0008
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h3C, 8'h66, 8'h42, 8'h42, 8'h66, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0009
+        [8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hC3, 8'h99, 8'hBD, 8'hBD, 8'h99, 8'hC3, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF], // U+000A
+        [8'h00, 8'h00, 8'h1E, 8'h0E, 8'h1A, 8'h32, 8'h78, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h78, 8'h00, 8'h00, 8'h00, 8'h00], // U+000B
+        [8'h00, 8'h00, 8'h3C, 8'h66, 8'h66, 8'h66, 8'h66, 8'h3C, 8'h18, 8'h7E, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+000C
+        [8'h00, 8'h00, 8'h3F, 8'h33, 8'h3F, 8'h30, 8'h30, 8'h30, 8'h30, 8'h70, 8'hF0, 8'hE0, 8'h00, 8'h00, 8'h00, 8'h00], // U+000D
+        [8'h00, 8'h00, 8'h7F, 8'h63, 8'h7F, 8'h63, 8'h63, 8'h63, 8'h63, 8'h67, 8'hE7, 8'hE6, 8'hC0, 8'h00, 8'h00, 8'h00], // U+000E
+        [8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'hDB, 8'h3C, 8'hE7, 8'h3C, 8'hDB, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+000F
+        [8'h00, 8'h80, 8'hC0, 8'hE0, 8'hF0, 8'hF8, 8'hFE, 8'hF8, 8'hF0, 8'hE0, 8'hC0, 8'h80, 8'h00, 8'h00, 8'h00, 8'h00], // U+0010
+        [8'h00, 8'h02, 8'h06, 8'h0E, 8'h1E, 8'h3E, 8'hFE, 8'h3E, 8'h1E, 8'h0E, 8'h06, 8'h02, 8'h00, 8'h00, 8'h00, 8'h00], // U+0011
+        [8'h00, 8'h00, 8'h18, 8'h3C, 8'h7E, 8'h18, 8'h18, 8'h18, 8'h7E, 8'h3C, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0012
+        [8'h00, 8'h00, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h00, 8'h66, 8'h66, 8'h00, 8'h00, 8'h00, 8'h00], // U+0013
+        [8'h00, 8'h00, 8'h7F, 8'hDB, 8'hDB, 8'hDB, 8'h7B, 8'h1B, 8'h1B, 8'h1B, 8'h1B, 8'h1B, 8'h00, 8'h00, 8'h00, 8'h00], // U+0014
+        [8'h00, 8'h7C, 8'hC6, 8'h60, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'h6C, 8'h38, 8'h0C, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00], // U+0015
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'hFE, 8'hFE, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+0016
+        [8'h00, 8'h00, 8'h18, 8'h3C, 8'h7E, 8'h18, 8'h18, 8'h18, 8'h7E, 8'h3C, 8'h18, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+0017
+        [8'h00, 8'h00, 8'h18, 8'h3C, 8'h7E, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+0018
+        [8'h00, 8'h00, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h7E, 8'h3C, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+0019
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h0C, 8'hFE, 8'h0C, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+001A
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h30, 8'h60, 8'hFE, 8'h60, 8'h30, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+001B
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hC0, 8'hC0, 8'hC0, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+001C
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h28, 8'h6C, 8'hFE, 8'h6C, 8'h28, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+001D
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h10, 8'h38, 8'h38, 8'h7C, 8'h7C, 8'hFE, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+001E
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'hFE, 8'h7C, 8'h7C, 8'h38, 8'h38, 8'h10, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+001F
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0020 ( )
+        [8'h00, 8'h00, 8'h18, 8'h3C, 8'h3C, 8'h3C, 8'h18, 8'h18, 8'h18, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+0021 (!)
+        [8'h00, 8'h66, 8'h66, 8'h66, 8'h24, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0022 (")
+        [8'h00, 8'h00, 8'h00, 8'h6C, 8'h6C, 8'hFE, 8'h6C, 8'h6C, 8'h6C, 8'hFE, 8'h6C, 8'h6C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0023 (#)
+        [8'h18, 8'h18, 8'h7C, 8'hC6, 8'hC2, 8'hC0, 8'h7C, 8'h06, 8'h06, 8'h86, 8'hC6, 8'h7C, 8'h18, 8'h18, 8'h00, 8'h00], // U+0024 ($)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'hC2, 8'hC6, 8'h0C, 8'h18, 8'h30, 8'h60, 8'hC6, 8'h86, 8'h00, 8'h00, 8'h00, 8'h00], // U+0025 (%)
+        [8'h00, 8'h00, 8'h38, 8'h6C, 8'h6C, 8'h38, 8'h76, 8'hDC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0026 (&)
+        [8'h00, 8'h30, 8'h30, 8'h30, 8'h60, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0027 (')
+        [8'h00, 8'h00, 8'h0C, 8'h18, 8'h30, 8'h30, 8'h30, 8'h30, 8'h30, 8'h30, 8'h18, 8'h0C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0028 (()
+        [8'h00, 8'h00, 8'h30, 8'h18, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h18, 8'h30, 8'h00, 8'h00, 8'h00, 8'h00], // U+0029 ())
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h66, 8'h3C, 8'hFF, 8'h3C, 8'h66, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+002A (*)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h7E, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+002B (+)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h18, 8'h30, 8'h00, 8'h00, 8'h00], // U+002C (,)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+002D (-)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+002E (.)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h02, 8'h06, 8'h0C, 8'h18, 8'h30, 8'h60, 8'hC0, 8'h80, 8'h00, 8'h00, 8'h00, 8'h00], // U+002F (/)
+        [8'h00, 8'h00, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'hD6, 8'hD6, 8'hC6, 8'hC6, 8'h6C, 8'h38, 8'h00, 8'h00, 8'h00, 8'h00], // U+0030 (0)
+        [8'h00, 8'h00, 8'h18, 8'h38, 8'h78, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+0031 (1)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'h06, 8'h0C, 8'h18, 8'h30, 8'h60, 8'hC0, 8'hC6, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+0032 (2)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'h06, 8'h06, 8'h3C, 8'h06, 8'h06, 8'h06, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0033 (3)
+        [8'h00, 8'h00, 8'h0C, 8'h1C, 8'h3C, 8'h6C, 8'hCC, 8'hFE, 8'h0C, 8'h0C, 8'h0C, 8'h1E, 8'h00, 8'h00, 8'h00, 8'h00], // U+0034 (4)
+        [8'h00, 8'h00, 8'hFE, 8'hC0, 8'hC0, 8'hC0, 8'hFC, 8'h06, 8'h06, 8'h06, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0035 (5)
+        [8'h00, 8'h00, 8'h38, 8'h60, 8'hC0, 8'hC0, 8'hFC, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0036 (6)
+        [8'h00, 8'h00, 8'hFE, 8'hC6, 8'h06, 8'h06, 8'h0C, 8'h18, 8'h30, 8'h30, 8'h30, 8'h30, 8'h00, 8'h00, 8'h00, 8'h00], // U+0037 (7)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0038 (8)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'h7E, 8'h06, 8'h06, 8'h06, 8'h0C, 8'h78, 8'h00, 8'h00, 8'h00, 8'h00], // U+0039 (9)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+003A (:)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h30, 8'h00, 8'h00, 8'h00, 8'h00], // U+003B (;)
+        [8'h00, 8'h00, 8'h00, 8'h06, 8'h0C, 8'h18, 8'h30, 8'h60, 8'h30, 8'h18, 8'h0C, 8'h06, 8'h00, 8'h00, 8'h00, 8'h00], // U+003C (<)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7E, 8'h00, 8'h00, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+003D (=)
+        [8'h00, 8'h00, 8'h00, 8'h60, 8'h30, 8'h18, 8'h0C, 8'h06, 8'h0C, 8'h18, 8'h30, 8'h60, 8'h00, 8'h00, 8'h00, 8'h00], // U+003E (>)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'h0C, 8'h18, 8'h18, 8'h18, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+003F (?)
+        [8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hDE, 8'hDE, 8'hDE, 8'hDC, 8'hC0, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0040 (@)
+        [8'h00, 8'h00, 8'h10, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'hFE, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+0041 (A)
+        [8'h00, 8'h00, 8'hFC, 8'h66, 8'h66, 8'h66, 8'h7C, 8'h66, 8'h66, 8'h66, 8'h66, 8'hFC, 8'h00, 8'h00, 8'h00, 8'h00], // U+0042 (B)
+        [8'h00, 8'h00, 8'h3C, 8'h66, 8'hC2, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'hC2, 8'h66, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0043 (C)
+        [8'h00, 8'h00, 8'hF8, 8'h6C, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h6C, 8'hF8, 8'h00, 8'h00, 8'h00, 8'h00], // U+0044 (D)
+        [8'h00, 8'h00, 8'hFE, 8'h66, 8'h62, 8'h68, 8'h78, 8'h68, 8'h60, 8'h62, 8'h66, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+0045 (E)
+        [8'h00, 8'h00, 8'hFE, 8'h66, 8'h62, 8'h68, 8'h78, 8'h68, 8'h60, 8'h60, 8'h60, 8'hF0, 8'h00, 8'h00, 8'h00, 8'h00], // U+0046 (F)
+        [8'h00, 8'h00, 8'h3C, 8'h66, 8'hC2, 8'hC0, 8'hC0, 8'hDE, 8'hC6, 8'hC6, 8'h66, 8'h3A, 8'h00, 8'h00, 8'h00, 8'h00], // U+0047 (G)
+        [8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hFE, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+0048 (H)
+        [8'h00, 8'h00, 8'h3C, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0049 (I)
+        [8'h00, 8'h00, 8'h1E, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'hCC, 8'hCC, 8'hCC, 8'h78, 8'h00, 8'h00, 8'h00, 8'h00], // U+004A (J)
+        [8'h00, 8'h00, 8'hE6, 8'h66, 8'h66, 8'h6C, 8'h78, 8'h78, 8'h6C, 8'h66, 8'h66, 8'hE6, 8'h00, 8'h00, 8'h00, 8'h00], // U+004B (K)
+        [8'h00, 8'h00, 8'hF0, 8'h60, 8'h60, 8'h60, 8'h60, 8'h60, 8'h60, 8'h62, 8'h66, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+004C (L)
+        [8'h00, 8'h00, 8'hC6, 8'hEE, 8'hFE, 8'hFE, 8'hD6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+004D (M)
+        [8'h00, 8'h00, 8'hC6, 8'hE6, 8'hF6, 8'hFE, 8'hDE, 8'hCE, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+004E (N)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+004F (O)
+        [8'h00, 8'h00, 8'hFC, 8'h66, 8'h66, 8'h66, 8'h7C, 8'h60, 8'h60, 8'h60, 8'h60, 8'hF0, 8'h00, 8'h00, 8'h00, 8'h00], // U+0050 (P)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hD6, 8'hDE, 8'h7C, 8'h0C, 8'h0E, 8'h00, 8'h00], // U+0051 (Q)
+        [8'h00, 8'h00, 8'hFC, 8'h66, 8'h66, 8'h66, 8'h7C, 8'h6C, 8'h66, 8'h66, 8'h66, 8'hE6, 8'h00, 8'h00, 8'h00, 8'h00], // U+0052 (R)
+        [8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'h60, 8'h38, 8'h0C, 8'h06, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0053 (S)
+        [8'h00, 8'h00, 8'h7E, 8'h7E, 8'h5A, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0054 (T)
+        [8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0055 (U)
+        [8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h6C, 8'h38, 8'h10, 8'h00, 8'h00, 8'h00, 8'h00], // U+0056 (V)
+        [8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hD6, 8'hD6, 8'hD6, 8'hFE, 8'hEE, 8'h6C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0057 (W)
+        [8'h00, 8'h00, 8'hC6, 8'hC6, 8'h6C, 8'h7C, 8'h38, 8'h38, 8'h7C, 8'h6C, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+0058 (X)
+        [8'h00, 8'h00, 8'h66, 8'h66, 8'h66, 8'h66, 8'h3C, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0059 (Y)
+        [8'h00, 8'h00, 8'hFE, 8'hC6, 8'h86, 8'h0C, 8'h18, 8'h30, 8'h60, 8'hC2, 8'hC6, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+005A (Z)
+        [8'h00, 8'h00, 8'h3C, 8'h30, 8'h30, 8'h30, 8'h30, 8'h30, 8'h30, 8'h30, 8'h30, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+005B ([)
+        [8'h00, 8'h00, 8'h00, 8'h80, 8'hC0, 8'hE0, 8'h70, 8'h38, 8'h1C, 8'h0E, 8'h06, 8'h02, 8'h00, 8'h00, 8'h00, 8'h00], // U+005C (\)
+        [8'h00, 8'h00, 8'h3C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+005D (])
+        [8'h10, 8'h38, 8'h6C, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+005E (^)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h00, 8'h00], // U+005F (_)
+        [8'h00, 8'h30, 8'h18, 8'h0C, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+0060 (`)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h78, 8'h0C, 8'h7C, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0061 (a)
+        [8'h00, 8'h00, 8'hE0, 8'h60, 8'h60, 8'h78, 8'h6C, 8'h66, 8'h66, 8'h66, 8'h66, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0062 (b)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC0, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0063 (c)
+        [8'h00, 8'h00, 8'h1C, 8'h0C, 8'h0C, 8'h3C, 8'h6C, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0064 (d)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hFE, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0065 (e)
+        [8'h00, 8'h00, 8'h1C, 8'h36, 8'h32, 8'h30, 8'h78, 8'h30, 8'h30, 8'h30, 8'h30, 8'h78, 8'h00, 8'h00, 8'h00, 8'h00], // U+0066 (f)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h76, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h7C, 8'h0C, 8'hCC, 8'h78, 8'h00], // U+0067 (g)
+        [8'h00, 8'h00, 8'hE0, 8'h60, 8'h60, 8'h6C, 8'h76, 8'h66, 8'h66, 8'h66, 8'h66, 8'hE6, 8'h00, 8'h00, 8'h00, 8'h00], // U+0068 (h)
+        [8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h38, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0069 (i)
+        [8'h00, 8'h00, 8'h06, 8'h06, 8'h00, 8'h0E, 8'h06, 8'h06, 8'h06, 8'h06, 8'h06, 8'h06, 8'h66, 8'h66, 8'h3C, 8'h00], // U+006A (j)
+        [8'h00, 8'h00, 8'hE0, 8'h60, 8'h60, 8'h66, 8'h6C, 8'h78, 8'h78, 8'h6C, 8'h66, 8'hE6, 8'h00, 8'h00, 8'h00, 8'h00], // U+006B (k)
+        [8'h00, 8'h00, 8'h38, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+006C (l)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hEC, 8'hFE, 8'hD6, 8'hD6, 8'hD6, 8'hD6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+006D (m)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hDC, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h00, 8'h00, 8'h00, 8'h00], // U+006E (n)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+006F (o)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hDC, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h7C, 8'h60, 8'h60, 8'hF0, 8'h00], // U+0070 (p)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h76, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h7C, 8'h0C, 8'h0C, 8'h1E, 8'h00], // U+0071 (q)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hDC, 8'h76, 8'h66, 8'h60, 8'h60, 8'h60, 8'hF0, 8'h00, 8'h00, 8'h00, 8'h00], // U+0072 (r)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'h60, 8'h38, 8'h0C, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0073 (s)
+        [8'h00, 8'h00, 8'h10, 8'h30, 8'h30, 8'hFC, 8'h30, 8'h30, 8'h30, 8'h30, 8'h36, 8'h1C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0074 (t)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0075 (u)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h6C, 8'h38, 8'h00, 8'h00, 8'h00, 8'h00], // U+0076 (v)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hC6, 8'hC6, 8'hD6, 8'hD6, 8'hD6, 8'hFE, 8'h6C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0077 (w)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hC6, 8'h6C, 8'h38, 8'h38, 8'h38, 8'h6C, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+0078 (x)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7E, 8'h06, 8'h0C, 8'hF8, 8'h00], // U+0079 (y)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'hCC, 8'h18, 8'h30, 8'h60, 8'hC6, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+007A (z)
+        [8'h00, 8'h00, 8'h0E, 8'h18, 8'h18, 8'h18, 8'h70, 8'h18, 8'h18, 8'h18, 8'h18, 8'h0E, 8'h00, 8'h00, 8'h00, 8'h00], // U+007B ({)
+        [8'h00, 8'h00, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+007C (|)
+        [8'h00, 8'h00, 8'h70, 8'h18, 8'h18, 8'h18, 8'h0E, 8'h18, 8'h18, 8'h18, 8'h18, 8'h70, 8'h00, 8'h00, 8'h00, 8'h00], // U+007D (})
+        [8'h00, 8'h76, 8'hDC, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+007E (~)
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h10, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'hC6, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+007F
+        [8'h00, 8'h00, 8'h3C, 8'h66, 8'hC2, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'hC2, 8'h66, 8'h3C, 8'h18, 8'h70, 8'h00, 8'h00], // U+0080
+        [8'h00, 8'h00, 8'hCC, 8'h00, 8'h00, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0081
+        [8'h00, 8'h0C, 8'h18, 8'h30, 8'h00, 8'h7C, 8'hC6, 8'hFE, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0082
+        [8'h00, 8'h10, 8'h38, 8'h6C, 8'h00, 8'h78, 8'h0C, 8'h7C, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0083
+        [8'h00, 8'h00, 8'hCC, 8'h00, 8'h00, 8'h78, 8'h0C, 8'h7C, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0084
+        [8'h00, 8'h60, 8'h30, 8'h18, 8'h00, 8'h78, 8'h0C, 8'h7C, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0085
+        [8'h00, 8'h38, 8'h6C, 8'h38, 8'h00, 8'h78, 8'h0C, 8'h7C, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0086
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC0, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h18, 8'h70, 8'h00, 8'h00], // U+0087
+        [8'h00, 8'h10, 8'h38, 8'h6C, 8'h00, 8'h7C, 8'hC6, 8'hFE, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0088
+        [8'h00, 8'h00, 8'hC6, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hFE, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0089
+        [8'h00, 8'h60, 8'h30, 8'h18, 8'h00, 8'h7C, 8'hC6, 8'hFE, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+008A
+        [8'h00, 8'h00, 8'h66, 8'h00, 8'h00, 8'h38, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+008B
+        [8'h00, 8'h18, 8'h3C, 8'h66, 8'h00, 8'h38, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+008C
+        [8'h00, 8'h60, 8'h30, 8'h18, 8'h00, 8'h38, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+008D
+        [8'h00, 8'hC6, 8'h00, 8'h10, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'hFE, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+008E
+        [8'h38, 8'h6C, 8'h38, 8'h10, 8'h38, 8'h6C, 8'hC6, 8'hFE, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+008F
+        [8'h0C, 8'h18, 8'h00, 8'hFE, 8'h66, 8'h62, 8'h68, 8'h78, 8'h68, 8'h62, 8'h66, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+0090
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hEC, 8'h36, 8'h36, 8'h7E, 8'hD8, 8'hD8, 8'h6E, 8'h00, 8'h00, 8'h00, 8'h00], // U+0091
+        [8'h00, 8'h00, 8'h3E, 8'h6C, 8'hCC, 8'hCC, 8'hFE, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCE, 8'h00, 8'h00, 8'h00, 8'h00], // U+0092
+        [8'h00, 8'h10, 8'h38, 8'h6C, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0093
+        [8'h00, 8'h00, 8'hC6, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0094
+        [8'h00, 8'h60, 8'h30, 8'h18, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0095
+        [8'h00, 8'h30, 8'h78, 8'hCC, 8'h00, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0096
+        [8'h00, 8'h60, 8'h30, 8'h18, 8'h00, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+0097
+        [8'h00, 8'h00, 8'hC6, 8'h00, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7E, 8'h06, 8'h0C, 8'h78, 8'h00], // U+0098
+        [8'h00, 8'hC6, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+0099
+        [8'h00, 8'hC6, 8'h00, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+009A
+        [8'h00, 8'h18, 8'h18, 8'h7C, 8'hC6, 8'hC0, 8'hC0, 8'hC0, 8'hC6, 8'h7C, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+009B
+        [8'h00, 8'h38, 8'h6C, 8'h64, 8'h60, 8'hF0, 8'h60, 8'h60, 8'h60, 8'h60, 8'hE6, 8'hFC, 8'h00, 8'h00, 8'h00, 8'h00], // U+009C
+        [8'h00, 8'h00, 8'h66, 8'h66, 8'h3C, 8'h18, 8'h7E, 8'h18, 8'h7E, 8'h18, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+009D
+        [8'h00, 8'hF8, 8'hCC, 8'hCC, 8'hF8, 8'hC4, 8'hCC, 8'hDE, 8'hCC, 8'hCC, 8'hCC, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+009E
+        [8'h00, 8'h0E, 8'h1B, 8'h18, 8'h18, 8'h18, 8'h7E, 8'h18, 8'h18, 8'h18, 8'hD8, 8'h70, 8'h00, 8'h00, 8'h00, 8'h00], // U+009F
+        [8'h00, 8'h18, 8'h30, 8'h60, 8'h00, 8'h78, 8'h0C, 8'h7C, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A0
+        [8'h00, 8'h0C, 8'h18, 8'h30, 8'h00, 8'h38, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A1
+        [8'h00, 8'h18, 8'h30, 8'h60, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A2
+        [8'h00, 8'h18, 8'h30, 8'h60, 8'h00, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'hCC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A3
+        [8'h00, 8'h00, 8'h76, 8'hDC, 8'h00, 8'hDC, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A4
+        [8'h76, 8'hDC, 8'h00, 8'hC6, 8'hE6, 8'hF6, 8'hFE, 8'hDE, 8'hCE, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A5
+        [8'h00, 8'h00, 8'h3C, 8'h6C, 8'h6C, 8'h3E, 8'h00, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A6
+        [8'h00, 8'h00, 8'h38, 8'h6C, 8'h6C, 8'h38, 8'h00, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A7
+        [8'h00, 8'h00, 8'h30, 8'h30, 8'h00, 8'h30, 8'h30, 8'h60, 8'hC0, 8'hC6, 8'hC6, 8'h7C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A8
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00A9
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'h06, 8'h06, 8'h06, 8'h06, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00AA
+        [8'h00, 8'h60, 8'hE0, 8'h62, 8'h66, 8'h6C, 8'h18, 8'h30, 8'h60, 8'hDC, 8'h86, 8'h0C, 8'h18, 8'h3E, 8'h00, 8'h00], // U+00AB
+        [8'h00, 8'h60, 8'hE0, 8'h62, 8'h66, 8'h6C, 8'h18, 8'h30, 8'h66, 8'hCE, 8'h9A, 8'h3F, 8'h06, 8'h06, 8'h00, 8'h00], // U+00AC
+        [8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h18, 8'h18, 8'h18, 8'h3C, 8'h3C, 8'h3C, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+00AD
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h36, 8'h6C, 8'hD8, 8'h6C, 8'h36, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00AE
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hD8, 8'h6C, 8'h36, 8'h6C, 8'hD8, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00AF
+        [8'h11, 8'h44, 8'h11, 8'h44, 8'h11, 8'h44, 8'h11, 8'h44, 8'h11, 8'h44, 8'h11, 8'h44, 8'h11, 8'h44, 8'h11, 8'h44], // U+00B0
+        [8'h55, 8'hAA, 8'h55, 8'hAA, 8'h55, 8'hAA, 8'h55, 8'hAA, 8'h55, 8'hAA, 8'h55, 8'hAA, 8'h55, 8'hAA, 8'h55, 8'hAA], // U+00B1
+        [8'hDD, 8'h77, 8'hDD, 8'h77, 8'hDD, 8'h77, 8'hDD, 8'h77, 8'hDD, 8'h77, 8'hDD, 8'h77, 8'hDD, 8'h77, 8'hDD, 8'h77], // U+00B2
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00B3
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hF8, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00B4
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hF8, 8'h18, 8'hF8, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00B5
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hF6, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00B6
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00B7
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hF8, 8'h18, 8'hF8, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00B8
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hF6, 8'h06, 8'hF6, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00B9
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00BA
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'h06, 8'hF6, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00BB
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hF6, 8'h06, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00BC
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00BD
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hF8, 8'h18, 8'hF8, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00BE
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hF8, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00BF
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h1F, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00C0
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00C1
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00C2
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h1F, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00C3
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00C4
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hFF, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00C5
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h1F, 8'h18, 8'h1F, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00C6
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h37, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00C7
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h37, 8'h30, 8'h3F, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00C8
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h3F, 8'h30, 8'h37, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00C9
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hF7, 8'h00, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00CA
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h00, 8'hF7, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00CB
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h37, 8'h30, 8'h37, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00CC
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h00, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00CD
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hF7, 8'h00, 8'hF7, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00CE
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hFF, 8'h00, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00CF
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00D0
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h00, 8'hFF, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00D1
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00D2
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h3F, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00D3
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h1F, 8'h18, 8'h1F, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00D4
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h1F, 8'h18, 8'h1F, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00D5
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h3F, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00D6
+        [8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'hFF, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36], // U+00D7
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hFF, 8'h18, 8'hFF, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00D8
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hF8, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00D9
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h1F, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00DA
+        [8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF], // U+00DB
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF], // U+00DC
+        [8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0, 8'hF0], // U+00DD
+        [8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F, 8'h0F], // U+00DE
+        [8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00DF
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h76, 8'hDC, 8'hD8, 8'hD8, 8'hD8, 8'hDC, 8'h76, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E0
+        [8'h00, 8'h00, 8'h78, 8'hCC, 8'hCC, 8'hCC, 8'hD8, 8'hCC, 8'hC6, 8'hC6, 8'hC6, 8'hCC, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E1
+        [8'h00, 8'h00, 8'hFE, 8'hC6, 8'hC6, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'hC0, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E2
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'h6C, 8'h6C, 8'h6C, 8'h6C, 8'h6C, 8'h6C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E3
+        [8'h00, 8'h00, 8'hFE, 8'hC6, 8'h60, 8'h30, 8'h18, 8'h18, 8'h30, 8'h60, 8'hC6, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E4
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7E, 8'hD8, 8'hD8, 8'hD8, 8'hD8, 8'hD8, 8'h70, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E5
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h66, 8'h7C, 8'h60, 8'h60, 8'hC0, 8'h00], // U+00E6
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h76, 8'hDC, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E7
+        [8'h00, 8'h00, 8'h7E, 8'h18, 8'h3C, 8'h66, 8'h66, 8'h66, 8'h66, 8'h3C, 8'h18, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E8
+        [8'h00, 8'h00, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'hFE, 8'hC6, 8'hC6, 8'hC6, 8'h6C, 8'h38, 8'h00, 8'h00, 8'h00, 8'h00], // U+00E9
+        [8'h00, 8'h00, 8'h38, 8'h6C, 8'hC6, 8'hC6, 8'hC6, 8'h6C, 8'h6C, 8'h6C, 8'h6C, 8'hEE, 8'h00, 8'h00, 8'h00, 8'h00], // U+00EA
+        [8'h00, 8'h00, 8'h1E, 8'h30, 8'h18, 8'h0C, 8'h3E, 8'h66, 8'h66, 8'h66, 8'h66, 8'h3C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00EB
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h7E, 8'hDB, 8'hDB, 8'hDB, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00EC
+        [8'h00, 8'h00, 8'h00, 8'h03, 8'h06, 8'h7E, 8'hDB, 8'hDB, 8'hF3, 8'h7E, 8'h60, 8'hC0, 8'h00, 8'h00, 8'h00, 8'h00], // U+00ED
+        [8'h00, 8'h00, 8'h1C, 8'h30, 8'h60, 8'h60, 8'h7C, 8'h60, 8'h60, 8'h60, 8'h30, 8'h1C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00EE
+        [8'h00, 8'h00, 8'h00, 8'h7C, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'hC6, 8'h00, 8'h00, 8'h00, 8'h00], // U+00EF
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'hFE, 8'h00, 8'h00, 8'hFE, 8'h00, 8'h00, 8'hFE, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F0
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h7E, 8'h18, 8'h18, 8'h00, 8'h00, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F1
+        [8'h00, 8'h00, 8'h00, 8'h30, 8'h18, 8'h0C, 8'h06, 8'h0C, 8'h18, 8'h30, 8'h00, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F2
+        [8'h00, 8'h00, 8'h00, 8'h0C, 8'h18, 8'h30, 8'h60, 8'h30, 8'h18, 8'h0C, 8'h00, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F3
+        [8'h00, 8'h00, 8'h0E, 8'h1B, 8'h1B, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18], // U+00F4
+        [8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'h18, 8'hD8, 8'hD8, 8'hD8, 8'h70, 8'h00, 8'h00, 8'h00], // U+00F5
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h00, 8'h7E, 8'h00, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F6
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h76, 8'hDC, 8'h00, 8'h76, 8'hDC, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F7
+        [8'h00, 8'h38, 8'h6C, 8'h6C, 8'h38, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F8
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00F9
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h18, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00FA
+        [8'h00, 8'h0F, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'h0C, 8'hEC, 8'h6C, 8'h6C, 8'h3C, 8'h1C, 8'h00, 8'h00, 8'h00, 8'h00], // U+00FB
+        [8'h00, 8'h6C, 8'h36, 8'h36, 8'h36, 8'h36, 8'h36, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00FC
+        [8'h00, 8'h3C, 8'h66, 8'h0C, 8'h18, 8'h32, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00FD
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h7E, 8'h7E, 8'h7E, 8'h7E, 8'h7E, 8'h7E, 8'h7E, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00], // U+00FE
+        [8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00]  // U+00FF
+    ];
+
+
+    bits <> MUX(8) <> [ch]
+        ++ [
+            MUX(4) <> [row] ++ [
+                font_8x16[i][j] | j in [0..16]
+            ] | i in [0..256]
+        ];
 }

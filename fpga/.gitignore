@@ -9,6 +9,8 @@
 !ram_a.v
 !ram_b.qip
 !ram_b.v
+!ram_c.qip
+!ram_c.v
 !unnamed.qsys
 db/
 incremental_db/

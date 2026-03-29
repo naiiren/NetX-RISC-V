@@ -26,11 +26,12 @@ def bin_to_hex(data: bytes, word_base_addr: int = 0) -> str:
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print(f'Usage: {sys.argv[0]} <binary_file>', file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print(f'Usage: {sys.argv[0]} <binary_file> [word_base_addr]', file=sys.stderr)
         sys.exit(1)
 
     with open(sys.argv[1], 'rb') as f:
         raw = f.read()
 
-    sys.stdout.write(bin_to_hex(raw))
+    base_addr = int(sys.argv[2], 0) if len(sys.argv) == 3 else 0
+    sys.stdout.write(bin_to_hex(raw, base_addr))

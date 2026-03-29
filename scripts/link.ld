@@ -2,37 +2,44 @@
  *
  * The CPU uses a Harvard memory layout:
  *   - Instruction memory: byte addresses 0x0000 – 0x7FFF
- *     (initialised from the .hex file; not accessible via load/store)
  *   - Data memory:        byte addresses 0x0000 – 0x7FFF
- *     (initialised from the .data file; stack lives here)
  *
- * We therefore place the entire program (startup, code, read-only
- * constants) flat in .text at address 0.  Any genuine .data / .bss
- * cannot be automatically mirrored to data memory, so we discard
- * them – all writable state must live on the stack.
+ * The two address spaces overlap numerically but are physically
+ * distinct, so .text and .data can both start at address 0 in
+ * separate memory regions and be emitted into different init images.
  */
 
 ENTRY(_start)
 
+MEMORY
+{
+    IMEM (rx)  : ORIGIN = 0x00000000, LENGTH = 32K
+    DMEM (rwx) : ORIGIN = 0x00000000, LENGTH = 32K
+}
+
 SECTIONS
 {
-    . = 0x00000000;
-
     .text : {
         /* Put the startup stub first so the reset vector at 0x0 jumps
          * straight into _start. */
         *(.text.start*)
         *(.text*)
-        /* Place read-only data inside the instruction image.
-         * WARNING: this data is NOT reachable via lw/lh/lb because
-         * loads go to data memory.  Keep .rodata empty in practice. */
-        *(.rodata*)
-    }
+    } > IMEM
 
-    /* Discard everything else – no C runtime, no dynamic linking. */
-    /DISCARD/ : {
+    .data : {
+        *(.sdata*)
         *(.data*)
+        *(.rodata*)
+        *(.rodata.*)
+    } > DMEM
+
+    .bss (NOLOAD) : {
+        *(.sbss*)
         *(.bss*)
+        *(COMMON)
+    } > DMEM
+
+    /DISCARD/ : {
         *(.eh_frame*)
         *(.comment*)
         *(.riscv.attributes)

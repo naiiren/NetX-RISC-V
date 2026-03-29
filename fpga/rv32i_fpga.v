@@ -37,14 +37,21 @@ output		     [8:0]		LEDG,
 	output		          		LCD_RS,
 	output		          		LCD_RW,
 
-	//////////// USB 2.0 OTG (Cypress CY7C67200) //////////
-	output		     [1:0]		OTG_ADDR,
-	output		          		OTG_CS_N,
-	inout 		    [15:0]		OTG_DATA,
-	input 		          		OTG_INT,
-	output		          		OTG_RD_N,
-	output		          		OTG_RST_N,
-	output		          		OTG_WE_N
+	//////////// PS2 for Keyboard and Mouse //////////
+	inout 		          		PS2_CLK,
+	inout 		          		PS2_CLK2,
+	inout 		          		PS2_DAT,
+	inout 		          		PS2_DAT2,
+
+	//////////// VGA //////////
+	output		     [7:0]		VGA_B,
+	output		          		VGA_BLANK_N,
+	output		          		VGA_CLK,
+	output		     [7:0]		VGA_G,
+	output		          		VGA_HS,
+	output		     [7:0]		VGA_R,
+	output		          		VGA_SYNC_N,
+	output		          		VGA_VS
 
 );
 
@@ -68,12 +75,29 @@ wire        dmemWe;
 wire [31:0] dmemRawOut;
 wire [31:0] dmemRamOut;
 wire [31:0] dmemMmioOut;
+wire [31:0] dmemLcdOut;
+wire [31:0] dmemKbdOut;
+wire [31:0] dmemVgaOut;
+wire [31:0] dmemVgaTextOut;
 wire [31:0] dmemRamIn;
 wire [3:0]  dmemByteEn;
 wire [14:0] dmemRdAddr;
 wire [14:0] dmemWrAddr;
 wire        dmemRamWe;
 wire        dmemMmioHit;
+wire        dmemLcdHit;
+wire        dmemKbdHit;
+wire        dmemVgaHit;
+wire        dmemVgaTextHit;
+wire        vgaTextWe;
+wire [11:0] vgaTextAddrA;
+wire [11:0] vgaTextAddrB;
+wire [7:0]  vgaTextInA;
+wire [7:0]  vgaTextOutA;
+wire [7:0]  vgaTextOutB;
+wire        kbdDataRead;
+
+reg  [7:0]  lastKbdByte;
 
 //=======================================================
 //  Structural coding
@@ -97,13 +121,19 @@ end
 assign clk = CLOCK_50;
 assign rst = SW[0];
 assign LEDR[17:0] = imemAddr[17:0];
-assign LEDG = 9'b0;
-assign OTG_ADDR  = 2'b00;
-assign OTG_CS_N  = 1'b1;
-assign OTG_RD_N  = 1'b1;
-assign OTG_RST_N = 1'b1;
-assign OTG_WE_N  = 1'b1;
-assign OTG_DATA  = 16'hzzzz;
+assign LEDG = {~rst, lastKbdByte};
+assign PS2_CLK  = 1'bz;
+assign PS2_DAT  = 1'bz;
+assign PS2_CLK2 = 1'bz;
+assign PS2_DAT2 = 1'bz;
+
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        lastKbdByte <= 8'h00;
+    end else if (kbdDataRead) begin
+        lastKbdByte <= dmemKbdOut[7:0];
+    end
+end
 
 //=======================================================
 //  Core
@@ -136,14 +166,48 @@ LCD_DRIVER lcd_driver(
     dmemDataIn,
     dmemOp,
     dmemWe,
-    dmemMmioOut,
-    dmemMmioHit,
+    dmemLcdOut,
+    dmemLcdHit,
     LCD_DATA,
     LCD_BLON,
     LCD_EN,
     LCD_ON,
     LCD_RS,
     LCD_RW
+);
+
+PS2_KEYBOARD_DRIVER keyboard_driver(
+    clk,
+    rst,
+    dmemAddr,
+    dmemDataIn,
+    dmemOp,
+    dmemWe,
+    PS2_CLK,
+    PS2_DAT,
+    dmemKbdOut,
+    dmemKbdHit
+);
+
+VGA_DRIVER vga_driver(
+    clk,
+    rst,
+    dmemAddr,
+    dmemDataIn,
+    dmemOp,
+    dmemWe,
+    vgaTextOutB,
+    dmemVgaOut,
+    dmemVgaHit,
+    vgaTextAddrB,
+    VGA_R,
+    VGA_G,
+    VGA_B,
+    VGA_BLANK_N,
+    VGA_CLK,
+    VGA_HS,
+    VGA_SYNC_N,
+    VGA_VS
 );
 
 //=======================================================
@@ -165,7 +229,19 @@ rv32i_data_mem_adapter dmem_adapter (
     .ram_rdata(dmemRawOut)
 );
 
+assign dmemVgaTextHit = dmemAddr[31] && (dmemAddr[31:12] == 20'h80001);
+assign kbdDataRead = dmemKbdHit && !dmemWe && (dmemAddr == 32'h80000084);
+assign dmemVgaTextOut = (dmemOp == 3'b000) ? {{24{vgaTextOutA[7]}}, vgaTextOutA} :
+                        {24'b0, vgaTextOutA};
+assign dmemMmioHit = dmemLcdHit | dmemKbdHit | dmemVgaHit | dmemVgaTextHit;
+assign dmemMmioOut = dmemLcdHit ? dmemLcdOut :
+                     (dmemKbdHit ? dmemKbdOut :
+                     (dmemVgaHit ? dmemVgaOut : dmemVgaTextOut));
 assign dmemDataOut = dmemMmioHit ? dmemMmioOut : dmemRamOut;
+
+assign vgaTextWe = dmemVgaTextHit && dmemWe;
+assign vgaTextAddrA = dmemAddr[11:0];
+assign vgaTextInA = dmemDataIn[7:0];
 
 //=======================================================
 //  Memories
@@ -188,6 +264,18 @@ ram_b instr_mem(
     .data(32'b0),
     .wren(1'b0),
     .q(imemDataOut)
+);
+
+ram_c gfx_mem(
+    .address_a(vgaTextAddrA),
+    .address_b(vgaTextAddrB),
+    .clock(clk),
+    .data_a(vgaTextInA),
+    .data_b(8'b0),
+    .wren_a(vgaTextWe),
+    .wren_b(1'b0),
+    .q_a(vgaTextOutA),
+    .q_b(vgaTextOutB)
 );
 
 endmodule

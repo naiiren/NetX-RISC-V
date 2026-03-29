@@ -3,7 +3,7 @@
 #
 # Produces build artifacts in scripts/ and copies runtime images
 #   <name>.hex  (instruction memory image)
-#   <name>.data (data memory image, zero-initialised)
+#   <name>.data (data memory image)
 # into custom_cases/ so `rv32i_test --dir custom_cases` can run them.
 #
 # Usage:
@@ -25,6 +25,7 @@ OUT_DIR="${OUT_DIR:-${REPO_DIR}/custom_cases}"
 
 CLANG="${CLANG:-clang}"
 OBJCOPY="${OBJCOPY:-llvm-objcopy-20}"
+OBJDUMP="${OBJDUMP:-llvm-objdump-20}"
 PYTHON="${PYTHON:-python3}"
 
 # Common clang flags for bare-metal RV32I
@@ -38,6 +39,7 @@ CFLAGS=(
     -fno-stack-protector
     -fno-exceptions
     -T "${SCRIPT_DIR}/link.ld"
+    -Wl,--no-check-sections
 )
 
 TEST_NAMES=(
@@ -80,7 +82,8 @@ build_test() {
     echo "==> Building ${name} ..."
 
     local elf="${SCRIPT_DIR}/${name}.elf"
-    local bin="${SCRIPT_DIR}/${name}.bin"
+    local text_bin="${SCRIPT_DIR}/${name}.text.bin"
+    local data_bin="${SCRIPT_DIR}/${name}.data.bin"
     local hex="${SCRIPT_DIR}/${name}.hex"
     local dat="${SCRIPT_DIR}/${name}.data"
     local out_hex="${OUT_DIR}/${name}.hex"
@@ -90,20 +93,40 @@ build_test() {
 
     "${CLANG}" "${CFLAGS[@]}" "${sources[@]}" -o "${elf}"
 
-    local rodata_size
-    rodata_size=$(llvm-objdump-20 -h "${elf}" 2>/dev/null \
-        | awk '/\.rodata/ {print $3; found=1} END {if (!found) print "0"}')
-    if [[ "${rodata_size}" != "0" && "${rodata_size}" != "00000000" ]]; then
-        echo "WARNING: ${name}.elf has non-empty .rodata (${rodata_size} bytes)."
-        echo "         Load instructions cannot reach instruction memory –"
-        echo "         constant-pool accesses will silently read zero from data memory."
+    "${OBJCOPY}" -O binary --only-section=.text "${elf}" "${text_bin}"
+    "${PYTHON}" "${SCRIPT_DIR}/bin2hex.py" "${text_bin}" > "${hex}"
+
+    local data_sections=()
+    while read -r section_name; do
+        data_sections+=("--only-section=${section_name}")
+    done < <("${OBJDUMP}" -h "${elf}" 2>/dev/null | awk '
+        $2 == ".data" || $2 == ".sdata" || $2 == ".rodata" || $2 ~ /^\.rodata\./ { print $2 }
+    ')
+
+    if [[ ${#data_sections[@]} -eq 0 ]]; then
+        printf '@00000000\n' > "${dat}"
+    else
+        local data_addr
+        data_addr=$("${OBJDUMP}" -h "${elf}" 2>/dev/null | awk '
+            $2 == ".data" || $2 == ".sdata" || $2 == ".rodata" || $2 ~ /^\.rodata\./ {
+                addr = strtonum("0x" $4);
+                if (!found || addr < min) {
+                    min = addr;
+                    found = 1;
+                }
+            }
+            END {
+                if (found) {
+                    printf "%u\n", min;
+                } else {
+                    print "0";
+                }
+            }
+        ')
+
+        "${OBJCOPY}" -O binary "${data_sections[@]}" "${elf}" "${data_bin}"
+        "${PYTHON}" "${SCRIPT_DIR}/bin2hex.py" "${data_bin}" "$(( data_addr >> 2 ))" > "${dat}"
     fi
-
-    "${OBJCOPY}" -O binary --only-section=.text "${elf}" "${bin}"
-
-    "${PYTHON}" "${SCRIPT_DIR}/bin2hex.py" "${bin}" > "${hex}"
-
-    printf '@00000000\n' > "${dat}"
 
     cp "${hex}" "${out_hex}"
     cp "${dat}" "${out_dat}"
@@ -138,7 +161,8 @@ done
 for name in "${BUILT_NAMES[@]}"; do
     rm -f \
         "${SCRIPT_DIR}/${name}.elf" \
-        "${SCRIPT_DIR}/${name}.bin" \
+        "${SCRIPT_DIR}/${name}.text.bin" \
+        "${SCRIPT_DIR}/${name}.data.bin" \
         "${SCRIPT_DIR}/${name}.hex" \
         "${SCRIPT_DIR}/${name}.data"
 done

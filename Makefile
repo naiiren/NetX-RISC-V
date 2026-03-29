@@ -3,7 +3,7 @@ TARGET := $(BUILD_DIR)/rv32i_test
 
 TEST ?= gcd
 
-.PHONY: all run raw custom fpga lcd-demo fpga-lcd-demo clean
+.PHONY: all run raw custom fpga lcd-demo fpga-lcd-demo vga-demo fpga-vga-demo system-demo fpga-system-demo clean
 
 all: $(TARGET)
 
@@ -38,12 +38,20 @@ fpga:
 	bash ./scripts/build_tests.sh $(TEST)
 	bash ./scripts/fpga_flow.sh core $(TEST)
 
-lcd-demo:
+fpga-lcd:
 	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/lcd_demo.c
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/lcd.c
+	bash ./scripts/fpga_flow.sh lcd lcd
 
-fpga-lcd-demo: lcd-demo
-	bash ./scripts/fpga_flow.sh lcd lcd_demo
+fpga-vga:
+	mkdir -p fpga_cases
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/vga.c
+	bash ./scripts/fpga_flow.sh lcd vga
+
+fpga-system:
+	mkdir -p fpga_cases
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/system.c
+	bash ./scripts/fpga_flow.sh lcd system
 
 clean:
 	rm $(TARGET)
