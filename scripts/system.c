@@ -17,13 +17,16 @@
 #define PROMPT_COL 2u
 #define INPUT_COL 7u
 #define TEXT_MAX_COL 73u
-#define LINE_MAX 192u
+#define LINE_MAX 512u
 #define MAX_NAME_LEN 16u
-#define MAX_GLOBAL_BINDINGS 24u
-#define MAX_FRAME_BINDINGS 8u
-#define MAX_PARAMS 4u
-#define MAX_CLOSURES 16u
-#define MAX_BODY_LEN 96u
+#define MAX_GLOBAL_BINDINGS 96u
+#define MAX_FRAME_BINDINGS 24u
+#define MAX_PARAMS 12u
+#define MAX_CLOSURES 64u
+#define MAX_BODY_LEN 384u
+#define MAX_CALL_FRAMES 64u
+#define KEY_REPEAT_DELAY 250000u
+#define KEY_REPEAT_PERIOD 60000u
 
 enum EvalKind {
     EVAL_INT = 0,
@@ -69,8 +72,14 @@ static unsigned int GLOBAL_CLOSURES[MAX_GLOBAL_BINDINGS];
 static unsigned int GLOBAL_COUNT = 0u;
 static struct Closure CLOSURES[MAX_CLOSURES];
 static char LAST_RESULT_NAME[MAX_NAME_LEN];
+static char CALL_FRAME_NAMES[MAX_CALL_FRAMES][MAX_FRAME_BINDINGS][MAX_NAME_LEN];
+static unsigned int CALL_FRAME_KINDS[MAX_CALL_FRAMES][MAX_FRAME_BINDINGS];
+static int CALL_FRAME_VALUES[MAX_CALL_FRAMES][MAX_FRAME_BINDINGS];
+static unsigned int CALL_FRAME_CLOSURES[MAX_CALL_FRAMES][MAX_FRAME_BINDINGS];
+static unsigned int CALL_FRAME_TOP = 0u;
 
 static void copy_name(char *dst, const char *src);
+static void run_line(const char *line, unsigned int *row, unsigned int *col);
 
 static void lcd_clear(void) {
     for (unsigned int i = 0; i < LCD_COLS * LCD_ROWS; ++i) {
@@ -170,13 +179,7 @@ static void clear_repl_region(void) {
     }
 }
 
-static void repl_newline(unsigned int *cursor_row, unsigned int *cursor_col) {
-    *cursor_col = PROMPT_COL;
-    if (*cursor_row < VGA_ROWS - 1u) {
-        *cursor_row += 1u;
-        return;
-    }
-
+static void scroll_repl_up_one(void) {
     for (unsigned int row = REPL_TOP; row < VGA_ROWS - 1u; ++row) {
         for (unsigned int col = PROMPT_COL; col <= TEXT_MAX_COL; ++col) {
             unsigned int from = ((row + 1u) << 6) + ((row + 1u) << 4) + col;
@@ -188,6 +191,16 @@ static void repl_newline(unsigned int *cursor_row, unsigned int *cursor_col) {
     for (unsigned int col = PROMPT_COL; col <= TEXT_MAX_COL; ++col) {
         vga_putc(VGA_ROWS - 1u, col, ' ');
     }
+}
+
+static void repl_newline(unsigned int *cursor_row, unsigned int *cursor_col) {
+    *cursor_col = PROMPT_COL;
+    if (*cursor_row < VGA_ROWS - 1u) {
+        *cursor_row += 1u;
+        return;
+    }
+
+    scroll_repl_up_one();
 }
 
 static void console_putc(unsigned char ch, unsigned int *cursor_row, unsigned int *cursor_col) {
@@ -281,9 +294,6 @@ static unsigned int input_end_row(unsigned int start_row, const char *line, unsi
     for (unsigned int i = 0u; i < line_len; ++i) {
         if (line[i] == '\n') {
             row += 1u;
-            if (row >= VGA_ROWS) {
-                return VGA_ROWS - 1u;
-            }
             col = INPUT_COL;
             continue;
         }
@@ -291,14 +301,23 @@ static unsigned int input_end_row(unsigned int start_row, const char *line, unsi
         col += 1u;
         if (col > TEXT_MAX_COL) {
             row += 1u;
-            if (row >= VGA_ROWS) {
-                return VGA_ROWS - 1u;
-            }
             col = INPUT_COL;
         }
     }
 
     return row;
+}
+
+static void fit_input_window(unsigned int *start_row, const char *line, unsigned int line_len) {
+    unsigned int end_row = input_end_row(*start_row, line, line_len);
+
+    while (end_row >= VGA_ROWS) {
+        scroll_repl_up_one();
+        if (*start_row > REPL_TOP) {
+            *start_row -= 1u;
+        }
+        end_row -= 1u;
+    }
 }
 
 static void redraw_input_line(unsigned int start_row, const char *line, unsigned int line_len,
@@ -311,6 +330,10 @@ static void redraw_input_line(unsigned int start_row, const char *line, unsigned
     static unsigned int last_start_row = REPL_TOP;
     static unsigned int last_end_row = REPL_TOP;
     unsigned int clear_end_row = current_end_row;
+
+    if (current_end_row >= VGA_ROWS) {
+        current_end_row = VGA_ROWS - 1u;
+    }
 
     if (start_row == last_start_row && last_end_row > clear_end_row) {
         clear_end_row = last_end_row;
@@ -375,7 +398,9 @@ static void put_hex_byte_vga(unsigned int row, unsigned int col, unsigned int va
 }
 
 static unsigned int decode_set2(unsigned int code, unsigned int shift_down, unsigned int caps_lock) {
-    unsigned int upper = shift_down ^ caps_lock;
+    unsigned int shift = shift_down != 0u ? 1u : 0u;
+    unsigned int caps = caps_lock != 0u ? 1u : 0u;
+    unsigned int upper = shift ^ caps;
 
     if (code == 0x1Cu) return upper ? 'A' : 'a';
     if (code == 0x32u) return upper ? 'B' : 'b';
@@ -404,33 +429,109 @@ static unsigned int decode_set2(unsigned int code, unsigned int shift_down, unsi
     if (code == 0x35u) return upper ? 'Y' : 'y';
     if (code == 0x1Au) return upper ? 'Z' : 'z';
 
-    if (code == 0x45u) return shift_down ? ')' : '0';
-    if (code == 0x16u) return shift_down ? '!' : '1';
-    if (code == 0x1Eu) return shift_down ? '@' : '2';
-    if (code == 0x26u) return shift_down ? '#' : '3';
-    if (code == 0x25u) return shift_down ? '$' : '4';
-    if (code == 0x2Eu) return shift_down ? '%' : '5';
-    if (code == 0x36u) return shift_down ? '^' : '6';
-    if (code == 0x3Du) return shift_down ? '&' : '7';
-    if (code == 0x3Eu) return shift_down ? '*' : '8';
-    if (code == 0x46u) return shift_down ? '(' : '9';
+    if (code == 0x45u) return shift ? ')' : '0';
+    if (code == 0x16u) return shift ? '!' : '1';
+    if (code == 0x1Eu) return shift ? '@' : '2';
+    if (code == 0x26u) return shift ? '#' : '3';
+    if (code == 0x25u) return shift ? '$' : '4';
+    if (code == 0x2Eu) return shift ? '%' : '5';
+    if (code == 0x36u) return shift ? '^' : '6';
+    if (code == 0x3Du) return shift ? '&' : '7';
+    if (code == 0x3Eu) return shift ? '*' : '8';
+    if (code == 0x46u) return shift ? '(' : '9';
     if (code == 0x29u) return 0x20u;
     if (code == 0x5Au) return 0x0Au;
     if (code == 0x66u) return 0x08u;
     if (code == 0x0Du) return 0x09u;
-    if (code == 0x4Eu) return shift_down ? '_' : '-';
-    if (code == 0x55u) return shift_down ? '+' : '=';
-    if (code == 0x54u) return shift_down ? '{' : '[';
-    if (code == 0x5Bu) return shift_down ? '}' : ']';
-    if (code == 0x5Du) return shift_down ? '|' : '\\';
-    if (code == 0x4Cu) return shift_down ? ':' : ';';
-    if (code == 0x52u) return shift_down ? '"' : '\'';
-    if (code == 0x41u) return shift_down ? '<' : ',';
-    if (code == 0x49u) return shift_down ? '>' : '.';
-    if (code == 0x4Au) return shift_down ? '?' : '/';
-    if (code == 0x0Eu) return shift_down ? '~' : '`';
+    if (code == 0x4Eu) return shift ? '_' : '-';
+    if (code == 0x55u) return shift ? '+' : '=';
+    if (code == 0x54u) return shift ? '{' : '[';
+    if (code == 0x5Bu) return shift ? '}' : ']';
+    if (code == 0x5Du) return shift ? '|' : '\\';
+    if (code == 0x4Cu) return shift ? ':' : ';';
+    if (code == 0x52u) return shift ? '"' : '\'';
+    if (code == 0x41u) return shift ? '<' : ',';
+    if (code == 0x49u) return shift ? '>' : '.';
+    if (code == 0x4Au) return shift ? '?' : '/';
+    if (code == 0x0Eu) return shift ? '~' : '`';
 
     return 0u;
+}
+
+static void apply_input_char(unsigned int ch, char *line, unsigned int *line_len,
+                             unsigned int *cursor_index, unsigned int *history_active,
+                             char *history, unsigned int *history_len,
+                             char *draft, unsigned int *draft_len,
+                             unsigned int *input_start_row,
+                             unsigned int *cursor_row, unsigned int *cursor_col,
+                             unsigned int cursor_visible, unsigned int *typed_count) {
+    if (ch == 0x08u) {
+        if (*cursor_index > 0u && *line_len > 0u) {
+            for (unsigned int i = *cursor_index - 1u; i < *line_len; ++i) {
+                line[i] = line[i + 1u];
+            }
+            *line_len -= 1u;
+            *cursor_index -= 1u;
+        }
+    } else if (ch == 0x0Au || ch == 0x0Du) {
+        if (unmatched_paren_count(line, *line_len) > 0u && *line_len < LINE_MAX) {
+            for (unsigned int i = *line_len; i > *cursor_index; --i) {
+                line[i] = line[i - 1u];
+            }
+            line[*cursor_index] = '\n';
+            *line_len += 1u;
+            *cursor_index += 1u;
+            line[*line_len] = '\0';
+        } else {
+            line[*line_len] = '\0';
+            if (*line_len > 0u) {
+                copy_line(history, line, LINE_MAX);
+                *history_len = *line_len;
+            }
+            *history_active = 0u;
+            draft[0] = '\0';
+            *draft_len = 0u;
+            fit_input_window(input_start_row, line, *line_len);
+            input_cursor_position(*input_start_row, line, *line_len, *line_len, cursor_row, cursor_col);
+            redraw_input_line(*input_start_row, line, *line_len, *cursor_index, 0u);
+            run_line(line, cursor_row, cursor_col);
+            *line_len = 0u;
+            *cursor_index = 0u;
+            line[0] = '\0';
+            print_prompt(cursor_row, cursor_col);
+            *input_start_row = *cursor_row;
+            redraw_input_line(*input_start_row, line, *line_len, *cursor_index, cursor_visible);
+        }
+    } else if (ch == 0x09u) {
+        unsigned int tab_spaces = 2u;
+        if (*line_len + tab_spaces > LINE_MAX) {
+            tab_spaces = LINE_MAX - *line_len;
+        }
+        for (unsigned int n = 0u; n < tab_spaces; ++n) {
+            for (unsigned int i = *line_len; i > *cursor_index; --i) {
+                line[i] = line[i - 1u];
+            }
+            line[*cursor_index] = ' ';
+            *line_len += 1u;
+            *cursor_index += 1u;
+        }
+        line[*line_len] = '\0';
+        *history_active = 0u;
+        *typed_count += tab_spaces;
+    } else if (ch != 0u && ch >= 0x20u && *line_len < LINE_MAX) {
+        for (unsigned int i = *line_len; i > *cursor_index; --i) {
+            line[i] = line[i - 1u];
+        }
+        line[*cursor_index] = (char)ch;
+        *line_len += 1u;
+        *cursor_index += 1u;
+        line[*line_len] = '\0';
+        *history_active = 0u;
+        *typed_count += 1u;
+    }
+
+    fit_input_window(input_start_row, line, *line_len);
+    redraw_input_line(*input_start_row, line, *line_len, *cursor_index, cursor_visible);
 }
 
 static int is_space(char ch) {
@@ -783,13 +884,10 @@ static int is_builtin_name(const char *name) {
 static struct EvalResult eval_closure(unsigned int closure_index, struct EvalResult *args,
                                       unsigned int argc, const struct EnvFrame *env,
                                       unsigned int depth) {
-    char local_names[MAX_FRAME_BINDINGS][MAX_NAME_LEN];
-    unsigned int local_kinds[MAX_FRAME_BINDINGS];
-    int local_values[MAX_FRAME_BINDINGS];
-    unsigned int local_closures[MAX_FRAME_BINDINGS];
     struct EnvFrame local_env;
     const char *body_p;
     struct EvalResult result;
+    unsigned int frame_index;
 
     if (closure_index >= MAX_CLOSURES || !CLOSURES[closure_index].used) {
         return make_error_result("bad closure");
@@ -800,23 +898,31 @@ static struct EvalResult eval_closure(unsigned int closure_index, struct EvalRes
     if (argc > MAX_FRAME_BINDINGS) {
         return make_error_result("too many args");
     }
+    if (CALL_FRAME_TOP >= MAX_CALL_FRAMES) {
+        return make_error_result("frame overflow");
+    }
+
+    frame_index = CALL_FRAME_TOP;
+    CALL_FRAME_TOP += 1u;
 
     local_env.parent = env;
     local_env.count = 0u;
     local_env.capacity = MAX_FRAME_BINDINGS;
-    local_env.names = local_names;
-    local_env.kinds = local_kinds;
-    local_env.values = local_values;
-    local_env.closures = local_closures;
+    local_env.names = CALL_FRAME_NAMES[frame_index];
+    local_env.kinds = CALL_FRAME_KINDS[frame_index];
+    local_env.values = CALL_FRAME_VALUES[frame_index];
+    local_env.closures = CALL_FRAME_CLOSURES[frame_index];
 
     for (unsigned int i = 0; i < argc; ++i) {
         if (!env_bind(&local_env, CLOSURES[closure_index].params[i], args[i])) {
+            CALL_FRAME_TOP -= 1u;
             return make_error_result("frame full");
         }
     }
 
     body_p = CLOSURES[closure_index].body;
     result = eval_expr(&body_p, &local_env, depth + 1u);
+    CALL_FRAME_TOP -= 1u;
     skip_ws(&body_p);
     if (*body_p != '\0' && result.kind != EVAL_ERROR) {
         return make_error_result("body trailing");
@@ -1037,7 +1143,7 @@ static struct EvalResult eval_expr(const char **p, const struct EnvFrame *env, u
     int value;
     struct EvalResult result;
 
-    if (depth > 48u) {
+    if (depth > 128u) {
         return make_error_result("too deep");
     }
 
@@ -1161,6 +1267,11 @@ int main(void) {
     unsigned int draft_len = 0u;
     unsigned int blink_counter = 0u;
     unsigned int cursor_visible = 1u;
+    unsigned int held_scan = 0u;
+    unsigned int held_shift = 0u;
+    unsigned int held_caps = 0u;
+    unsigned int held_extended = 0u;
+    unsigned int repeat_counter = 0u;
 
     init_interpreter();
     init_screen();
@@ -1168,16 +1279,46 @@ int main(void) {
     line[0] = '\0';
     history[0] = '\0';
     draft[0] = '\0';
+    fit_input_window(&input_start_row, line, line_len);
     redraw_input_line(input_start_row, line, line_len, cursor_index, cursor_visible);
     lcd_update_status(last_scan, typed_count, last_char, shift_down, break_code, extended_code);
 
     while (1) {
         unsigned int status = KBD_STATUS;
         if ((status & 1u) == 0u) {
+            if (held_scan != 0u) {
+                repeat_counter += 1u;
+                if (repeat_counter >= KEY_REPEAT_DELAY) {
+                    repeat_counter = KEY_REPEAT_DELAY - KEY_REPEAT_PERIOD;
+                    cursor_visible = 1u;
+                    if (held_extended) {
+                        if (held_scan == 0x6Bu) {
+                            if (cursor_index > 0u) {
+                                cursor_index -= 1u;
+                            }
+                        } else if (held_scan == 0x74u) {
+                            if (cursor_index < line_len) {
+                                cursor_index += 1u;
+                            }
+                        }
+                        fit_input_window(&input_start_row, line, line_len);
+                        redraw_input_line(input_start_row, line, line_len, cursor_index, cursor_visible);
+                    } else {
+                        unsigned int repeat_ch = decode_set2(held_scan, held_shift, held_caps);
+                        if (repeat_ch != 0u && repeat_ch != 0x0Au && repeat_ch != 0x0Du) {
+                            apply_input_char(repeat_ch, line, &line_len, &cursor_index, &history_active,
+                                             history, &history_len, draft, &draft_len,
+                                             &input_start_row, &cursor_row, &cursor_col,
+                                             cursor_visible, &typed_count);
+                        }
+                    }
+                }
+            }
             blink_counter += 1u;
             if (blink_counter >= 500000u) {
                 blink_counter = 0u;
                 cursor_visible ^= 1u;
+                fit_input_window(&input_start_row, line, line_len);
                 redraw_input_line(input_start_row, line, line_len, cursor_index, cursor_visible);
             }
             continue;
@@ -1201,6 +1342,9 @@ int main(void) {
 
         if (last_scan == 0x12u || last_scan == 0x59u) {
             shift_down = break_code ? 0u : 1u;
+            if (break_code) {
+                held_shift = 0u;
+            }
             break_code = 0u;
             extended_code = 0u;
             lcd_update_status(last_scan, typed_count, last_char, shift_down, break_code, extended_code);
@@ -1242,10 +1386,20 @@ int main(void) {
                         history_active = 0u;
                     }
                 }
+                held_scan = last_scan;
+                held_shift = shift_down;
+                held_caps = caps_lock;
+                held_extended = 1u;
+                repeat_counter = 0u;
+            } else if (held_extended && held_scan == last_scan) {
+                held_scan = 0u;
+                held_extended = 0u;
+                repeat_counter = 0u;
             }
 
             break_code = 0u;
             extended_code = 0u;
+            fit_input_window(&input_start_row, line, line_len);
             redraw_input_line(input_start_row, line, line_len, cursor_index, cursor_visible);
             lcd_update_status(last_scan, typed_count, last_char, shift_down, break_code, extended_code);
             continue;
@@ -1254,70 +1408,21 @@ int main(void) {
         if (!break_code && !extended_code) {
             unsigned int ch = decode_set2(last_scan, shift_down, caps_lock);
             last_char = ch;
-            if (ch == 0x08u) {
-                if (cursor_index > 0u && line_len > 0u) {
-                    for (unsigned int i = cursor_index - 1u; i < line_len; ++i) {
-                        line[i] = line[i + 1u];
-                    }
-                    line_len -= 1u;
-                    cursor_index -= 1u;
-                }
-            } else if (ch == 0x0Au || ch == 0x0Du) {
-                if (unmatched_paren_count(line, line_len) > 0u && line_len < LINE_MAX) {
-                    for (unsigned int i = line_len; i > cursor_index; --i) {
-                        line[i] = line[i - 1u];
-                    }
-                    line[cursor_index] = '\n';
-                    line_len += 1u;
-                    cursor_index += 1u;
-                    line[line_len] = '\0';
-                } else {
-                    line[line_len] = '\0';
-                    if (line_len > 0u) {
-                        copy_line(history, line, LINE_MAX);
-                        history_len = line_len;
-                    }
-                    history_active = 0u;
-                    draft[0] = '\0';
-                    draft_len = 0u;
-                    input_cursor_position(input_start_row, line, line_len, line_len, &cursor_row, &cursor_col);
-                    redraw_input_line(input_start_row, line, line_len, cursor_index, 0u);
-                    run_line(line, &cursor_row, &cursor_col);
-                    line_len = 0u;
-                    cursor_index = 0u;
-                    line[0] = '\0';
-                    print_prompt(&cursor_row, &cursor_col);
-                    input_start_row = cursor_row;
-                    redraw_input_line(input_start_row, line, line_len, cursor_index, cursor_visible);
-                }
-            } else if (ch == 0x09u) {
-                unsigned int tab_spaces = 4u;
-                if (line_len + tab_spaces > LINE_MAX) {
-                    tab_spaces = LINE_MAX - line_len;
-                }
-                for (unsigned int n = 0u; n < tab_spaces; ++n) {
-                    for (unsigned int i = line_len; i > cursor_index; --i) {
-                        line[i] = line[i - 1u];
-                    }
-                    line[cursor_index] = ' ';
-                    line_len += 1u;
-                    cursor_index += 1u;
-                }
-                line[line_len] = '\0';
-                history_active = 0u;
-                typed_count += tab_spaces;
-            } else if (ch != 0u && ch >= 0x20u && line_len < LINE_MAX) {
-                for (unsigned int i = line_len; i > cursor_index; --i) {
-                    line[i] = line[i - 1u];
-                }
-                line[cursor_index] = (char)ch;
-                line_len += 1u;
-                cursor_index += 1u;
-                line[line_len] = '\0';
-                history_active = 0u;
-                typed_count += 1u;
+            if (ch != 0u) {
+                held_scan = last_scan;
+                held_shift = shift_down;
+                held_caps = caps_lock;
+                held_extended = 0u;
+                repeat_counter = 0u;
             }
-            redraw_input_line(input_start_row, line, line_len, cursor_index, cursor_visible);
+            apply_input_char(ch, line, &line_len, &cursor_index, &history_active,
+                             history, &history_len, draft, &draft_len,
+                             &input_start_row, &cursor_row, &cursor_col,
+                             cursor_visible, &typed_count);
+        } else if (!extended_code && held_scan == last_scan) {
+            held_scan = 0u;
+            held_extended = 0u;
+            repeat_counter = 0u;
         }
 
         break_code = 0u;

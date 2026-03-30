@@ -49,6 +49,7 @@ TEST_NAMES=(
     gcd
     prime
     matrix
+    switch
 )
 
 resolve_test_name() {

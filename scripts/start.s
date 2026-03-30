@@ -7,11 +7,11 @@
     .section .text.start,"ax"
     .global  _start
 _start:
-    /* Stack pointer = 0x7FF0 (16-byte aligned, top of 32 KB data memory).
-     * lui sp, 8   -> sp = 0x8000
-     * addi sp, -16 -> sp = 0x7FF0
+    /* Stack pointer = 0x1FFF0 (16-byte aligned, top of 128 KB data memory).
+     * lui sp, 0x20 -> sp = 0x20000
+     * addi sp, -16 -> sp = 0x1FFF0
      */
-    lui   sp, 8
+    lui   sp, 0x20
     addi  sp, sp, -16
 
     /* Zero frame pointer for clean stack walks. */

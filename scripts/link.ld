@@ -1,8 +1,8 @@
 /* Linker script for bare-metal RV32I test programs.
  *
  * The CPU uses a Harvard memory layout:
- *   - Instruction memory: byte addresses 0x0000 – 0x7FFF
- *   - Data memory:        byte addresses 0x0000 – 0x7FFF
+ *   - Instruction memory: byte addresses 0x0000 – 0x1FFFF
+ *   - Data memory:        byte addresses 0x0000 – 0x1FFFF
  *
  * The two address spaces overlap numerically but are physically
  * distinct, so .text and .data can both start at address 0 in
@@ -13,8 +13,8 @@ ENTRY(_start)
 
 MEMORY
 {
-    IMEM (rx)  : ORIGIN = 0x00000000, LENGTH = 32K
-    DMEM (rwx) : ORIGIN = 0x00000000, LENGTH = 32K
+    IMEM (rx)  : ORIGIN = 0x00000000, LENGTH = 128K
+    DMEM (rwx) : ORIGIN = 0x00000000, LENGTH = 128K
 }
 
 SECTIONS
