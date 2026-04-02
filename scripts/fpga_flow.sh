@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FPGA_DIR="${REPO_DIR}/fpga"
-
+QSF_FILE="${FPGA_DIR}/rv32i_fpga.qsf"
 NX="${NX:-nx}"
 QUARTUS_SH="quartus_sh"
 QUARTUS_CDB="quartus_cdb"
@@ -57,6 +57,47 @@ write_if_changed() {
     return 0
 }
 
+set_active_sources() {
+    local flow="$1"
+    local tmp_qsf
+    local changed=0
+
+    tmp_qsf="$(mktemp)"
+    awk -v flow="${flow}" '
+        /# BEGIN_ACTIVE_SOURCES/ {
+            print
+            if (flow == "netx") {
+                print "set_global_assignment -name VERILOG_FILE rv32i_fpga.v"
+                print "set_global_assignment -name VERILOG_FILE top.v"
+                print "set_global_assignment -name VERILOG_FILE io_periph.v"
+                print "set_global_assignment -name VERILOG_FILE kbd_periph.v"
+                print "set_global_assignment -name VERILOG_FILE vga_periph.v"
+            } else {
+                print "set_global_assignment -name VERILOG_FILE rv32i_fpga.v"
+                print "set_global_assignment -name VERILOG_FILE core.v"
+                print "set_global_assignment -name VERILOG_FILE verilog_periph.v"
+            }
+            in_block = 1
+            next
+        }
+        /# END_ACTIVE_SOURCES/ {
+            in_block = 0
+            print
+            next
+        }
+        !in_block { print }
+    ' "${QSF_FILE}" > "${tmp_qsf}"
+
+    if ! cmp -s "${tmp_qsf}" "${QSF_FILE}"; then
+        mv "${tmp_qsf}" "${QSF_FILE}"
+        changed=1
+    else
+        rm -f "${tmp_qsf}"
+    fi
+
+    return "${changed}"
+}
+
 CASE_DIR="${REPO_DIR}/custom_cases"
 if [[ "${FLOW_MODE}" == "lcd" ]]; then
     CASE_DIR="${REPO_DIR}/fpga_cases"
@@ -76,6 +117,19 @@ fi
 
 echo "[1/3] Regenerating FPGA HDL from NetX"
 NEED_FULL_COMPILE=0
+
+if set_active_sources "netx"; then
+    NEED_FULL_COMPILE=1
+fi
+
+if [[ -f "${FPGA_DIR}/core.v" ]]; then
+    rm -f "${FPGA_DIR}/core.v"
+    NEED_FULL_COMPILE=1
+fi
+if [[ -f "${FPGA_DIR}/verilog_periph.v" ]]; then
+    rm -f "${FPGA_DIR}/verilog_periph.v"
+    NEED_FULL_COMPILE=1
+fi
 
 "${NX}" dump verilog "${REPO_DIR}/_netx.toml" --top "${TOP_MODULE}" -o "${TMP_OUT1}"
 if write_if_changed "${TMP_OUT1}" "${FPGA_DIR}/top.v"; then
