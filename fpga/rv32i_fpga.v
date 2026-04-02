@@ -297,7 +297,6 @@ module rv32i_data_mem_adapter (
 
     wire [1:0] byte_offset = core_addr[1:0];
     wire       half_upper  = core_addr[1];
-
     wire [7:0]  load_byte = (ram_rdata >> ({byte_offset, 3'b000})) & 32'h000000ff;
     wire [15:0] load_half = half_upper ? ram_rdata[31:16] : ram_rdata[15:0];
 

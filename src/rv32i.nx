@@ -111,63 +111,83 @@ component CORE : [clk, rst, instr, dmem_out] -> [
         din       : wb_result
     };
 
-    auto exmem_bypass_rs1 <> AND <> [
-        exmem_fwd_ok, id_ctl.rs1_used,
-        EQ <> [exmem.rd, id_rs1]
+    auto exmem_bypass_rs1   <> AND <> [exmem_fwd_ok, id_ctl.rs1_used, EQ <> [exmem.rd, id_rs1]];
+    auto wb_bypass_rs1      <> AND <> [memwb_fwd_ok, id_ctl.rs1_used, EQ <> [memwb.rd, id_rs1]];
+    auto wb_bypass_rs1_only <> AND <> [wb_bypass_rs1, NOT <> exmem_bypass_rs1];
+
+    auto exmem_bypass_rs2   <> AND <> [exmem_fwd_ok, id_ctl.rs2_used, EQ <> [exmem.rd, id_rs2]];
+    auto wb_bypass_rs2      <> AND <> [memwb_fwd_ok, id_ctl.rs2_used, EQ <> [memwb.rd, id_rs2]];
+    auto wb_bypass_rs2_only <> AND <> [wb_bypass_rs2, NOT <> exmem_bypass_rs2];
+
+    auto id_ra_eff <> OR <> [
+        AND <> [CAST(32) <> exmem_bypass_rs1, exmem_fwd_data],
+        AND <> [CAST(32) <> wb_bypass_rs1_only, wb_result],
+        AND <> [
+            CAST(32) <> NOR <> [exmem_bypass_rs1, wb_bypass_rs1_only],
+            id_ra
+        ]
     ];
-    auto wb_bypass_rs1 <> AND <> [
-        memwb_fwd_ok, id_ctl.rs1_used,
-        EQ <> [memwb.rd, id_rs1]
-    ];
-    auto exmem_bypass_rs2 <> AND <> [
-        exmem_fwd_ok, id_ctl.rs2_used,
-        EQ <> [exmem.rd, id_rs2]
-    ];
-    auto wb_bypass_rs2 <> AND <> [
-        memwb_fwd_ok, id_ctl.rs2_used,
-        EQ <> [memwb.rd, id_rs2]
-    ];
-    auto id_ra_eff <> MUX(1) <> [
-        exmem_bypass_rs1,
-        MUX(1) <> [wb_bypass_rs1, id_ra, wb_result],
-        exmem_fwd_data
-    ];
-    auto id_rb_eff <> MUX(1) <> [
-        exmem_bypass_rs2,
-        MUX(1) <> [wb_bypass_rs2, id_rb, wb_result],
-        exmem_fwd_data
+    auto id_rb_eff <> OR <> [
+        AND <> [CAST(32) <> exmem_bypass_rs2, exmem_fwd_data],
+        AND <> [CAST(32) <> wb_bypass_rs2_only, wb_result],
+        AND <> [
+            CAST(32) <> NOR <> [exmem_bypass_rs2, wb_bypass_rs2_only],
+            id_rb
+        ]
     ];
 
     // ===== EX stage operand forwarding =====
     // EX/MEM forwarding only covers ALU results. Loads wait until MEM/WB so raw
     // dmem_out does not feed the redirect path combinationally.
-    auto fwd_rs1_from_exmem <> AND <> [
-        exmem_fwd_ok,
-        EQ <> [exmem.rd, idex.rs1]
+    auto ex_alu_uses_rs1 <> NOT <> idex.a_src;
+    auto ex_alu_uses_rs2 <> EQ <> [idex.b_src, 2'b00];
+    auto ex_store_uses_rs2 <> idex.mem_wr;
+
+    auto fwd_rs1_from_exmem      <> AND <> [exmem_fwd_ok, ex_alu_uses_rs1, EQ <> [exmem.rd, idex.rs1]];
+    auto fwd_rs1_from_memwb      <> AND <> [memwb_fwd_ok, ex_alu_uses_rs1, EQ <> [memwb.rd, idex.rs1]];
+    auto fwd_rs1_from_memwb_only <> AND <> [fwd_rs1_from_memwb, NOT <> fwd_rs1_from_exmem];
+    auto ex_alu_ra_fwd <> OR <> [
+        AND <> [CAST(32) <> fwd_rs1_from_exmem, exmem_fwd_data],
+        AND <> [CAST(32) <> fwd_rs1_from_memwb_only, wb_result],
+        AND <> [
+            CAST(32) <> NOR <> [fwd_rs1_from_exmem, fwd_rs1_from_memwb_only],
+            idex.ra
+        ]
     ];
-    auto fwd_rs2_from_exmem <> AND <> [
+
+    auto fwd_alu_rs2_from_exmem      <> AND <> [exmem_fwd_ok, ex_alu_uses_rs2, EQ <> [exmem.rd, idex.rs2]];
+    auto fwd_alu_rs2_from_memwb      <> AND <> [memwb_fwd_ok, ex_alu_uses_rs2, EQ <> [memwb.rd, idex.rs2]];
+    auto fwd_alu_rs2_from_memwb_only <> AND <> [fwd_alu_rs2_from_memwb, NOT <> fwd_alu_rs2_from_exmem];
+    auto ex_alu_rb_fwd <> OR <> [
+        AND <> [CAST(32) <> fwd_alu_rs2_from_exmem, exmem_fwd_data],
+        AND <> [CAST(32) <> fwd_alu_rs2_from_memwb_only, wb_result],
+        AND <> [
+            CAST(32) <> NOR <> [fwd_alu_rs2_from_exmem, fwd_alu_rs2_from_memwb_only],
+            idex.rb
+        ]
+    ];
+
+    auto fwd_store_rs2_from_exmem <> AND <> [
         exmem_fwd_ok,
+        ex_store_uses_rs2,
         EQ <> [exmem.rd, idex.rs2]
     ];
-
-    auto fwd_rs1_from_memwb <> AND <> [
+    auto fwd_store_rs2_from_memwb <> AND <> [
         memwb_fwd_ok,
-        EQ <> [memwb.rd, idex.rs1]
-    ];
-    auto fwd_rs2_from_memwb <> AND <> [
-        memwb_fwd_ok,
+        ex_store_uses_rs2,
         EQ <> [memwb.rd, idex.rs2]
     ];
-
-    auto ex_ra_fwd <> MUX(1) <> [
-        fwd_rs1_from_exmem,
-        MUX(1) <> [fwd_rs1_from_memwb, idex.ra, wb_result],
-        exmem_fwd_data
+    auto fwd_store_rs2_from_memwb_only <> AND <> [
+        fwd_store_rs2_from_memwb,
+        NOT <> fwd_store_rs2_from_exmem
     ];
-    auto ex_rb_fwd <> MUX(1) <> [
-        fwd_rs2_from_exmem,
-        MUX(1) <> [fwd_rs2_from_memwb, idex.rb, wb_result],
-        exmem_fwd_data
+    auto ex_store_rb_fwd <> OR <> [
+        AND <> [CAST(32) <> fwd_store_rs2_from_exmem, exmem_fwd_data],
+        AND <> [CAST(32) <> fwd_store_rs2_from_memwb_only, wb_result],
+        AND <> [
+            CAST(32) <> NOR <> [fwd_store_rs2_from_exmem, fwd_store_rs2_from_memwb_only],
+            idex.rb
+        ]
     ];
 
     // Keep the redirect path off the EX forwarding network. Control-flow
@@ -216,9 +236,10 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     auto id_redirect_eff <> AND <> [id_redirect, NOT <> front_stall];
 
     // ===== EX stage: branch resolution, ALU execution, redirect decision =====
+    auto ex_result_used <> OR <> [idex.reg_wr, idex.mem_wr];
     auto [ex_result, ex_zero, ex_less] <> ALU <> [
-        MUX(1) <> [idex.a_src, ex_ra_fwd, idex.pc],
-        MUX(2) <> [idex.b_src, ex_rb_fwd, idex.imm, 32'd4, 32'd4],
+        MUX(1) <> [idex.a_src, ex_alu_ra_fwd, idex.pc],
+        MUX(2) <> [idex.b_src, ex_alu_rb_fwd, idex.imm, 32'd4, 32'd4],
         idex.alu_ctl
     ];
     auto [ex_ctrl_eq, ex_ctrl_ltu, ex_ctrl_lts] <> BRANCH_COMPARE <> [idex.ra, idex.rb];
@@ -312,8 +333,8 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     exmem.mem_wr     <> reg(1'b0)   <> idex.mem_wr;
     exmem.mem_op     <> reg(3'b010) <> idex.mem_op;
     exmem.rd         <> reg(5'd0)   <> idex.rd;
-    exmem.result     <> reg(32'd0)  <> ex_result;
-    exmem.store_data <> reg(32'd0)  <> ex_rb_fwd;
+    exmem.result     <> reg(32'd0)  <> MUX(1) <> [ex_result_used, 32'd0, ex_result];
+    exmem.store_data <> reg(32'd0)  <> ex_store_rb_fwd;
 
     // ===== MEM stage: external memory request generation =====
     dmem_addr <> MUX(1) <> [exmem.valid, 32'd0, exmem.result];

@@ -656,9 +656,21 @@ component VGA_DRIVER : [
     wire glyph_row_q of bit(4);
     wire active_video_q, text_active_q of bit(1);
 
-    scan_char_q    <> reg(8'h20) <> MUX(1) <> [vga_clk, scan_char_q, scan_char];
-    glyph_col_q    <> reg(3'b000) <> MUX(1) <> [vga_clk, glyph_col_q, glyph_col];
-    glyph_row_q    <> reg(4'b0000) <> MUX(1) <> [vga_clk, glyph_row_q, glyph_row_sel];
+    scan_char_q    <> reg(8'h20) <> MUX(1) <> [
+        vga_clk,
+        scan_char_q,
+        MUX(1) <> [text_active, 8'h20, scan_char]
+    ];
+    glyph_col_q    <> reg(3'b000) <> MUX(1) <> [
+        vga_clk,
+        glyph_col_q,
+        MUX(1) <> [text_active, 3'b000, glyph_col]
+    ];
+    glyph_row_q    <> reg(4'b0000) <> MUX(1) <> [
+        vga_clk,
+        glyph_row_q,
+        MUX(1) <> [text_active, 4'b0000, glyph_row_sel]
+    ];
     active_video_q <> reg(1'b0) <> MUX(1) <> [vga_clk, active_video_q, active_video];
     text_active_q  <> reg(1'b0) <> MUX(1) <> [vga_clk, text_active_q, text_active];
 

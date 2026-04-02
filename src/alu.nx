@@ -30,10 +30,12 @@ component ALU : [a, b, alu_ctl] -> [result, zero, less] {
         XOR <> [carry, cin],
         XOR <> [overflow, adder_result[31]]
     ];
-    
+
+    // Keep the wide shifter mostly quiet when the selected ALU op is not a shift.
+    auto shift_en <> EQ <> [opcode[1:0], 2'b01];
     auto shift_result <> BARREL_SHIFTER(5) <> {
-        din   : a,
-        shamt : b[4:0], 
+        din   : MUX(1) <> [shift_en, 32'd0, a],
+        shamt : MUX(1) <> [shift_en, 5'd0, b[4:0]],
         dir   : LR,
         arith : AL
     };
@@ -95,9 +97,9 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
     wire cin, carry, zero, overflow of bit(1);
 
     let pattern(k) = 
-        let msb = 8 * k + 7 in
-        let lsb = 8 * k in
-        [#sum[msb:lsb], TO] <> CLA(8) <> [
+        let msb = 4 * k + 3 in
+        let lsb = 4 * k in
+        [#sum[msb:lsb], TO] <> CLA(4) <> [
             a[msb:lsb]#, b[msb:lsb]#, TO
         ];
 
@@ -107,7 +109,7 @@ component ADDER : [a, b, cin] -> [sum, carry, zero, overflow] {
             else chain(k - 1)
         );
 
-    carry <> chain(3) <> cin;
+    carry <> chain(7) <> cin;
      zero <> NOT <> OR <> [sum[i] | i in [0..32]];
     overflow <> AND <> [
         NOT <> XOR <> [a[31], b[31]],
@@ -134,14 +136,24 @@ component CLA(n) : [a, b, cin] -> [sum, carry] {
     wire a, b, sum  of bit(n);
     wire cin, carry of bit(1);
 
-    let P(i) =  OR <> [a[i], b[i]];
+    let P(i) = XOR <> [a[i], b[i]];
     let G(i) = AND <> [a[i], b[i]];
-    let C(i) = 
+    let PROP(lo, hi) =
+        if lo == hi then P(lo)
+        else AND <> [P(hi), PROP(lo, hi - 1)];
+    let GEN_TERM(k, i) =
+        if k == i - 1 then G(k)
+        else AND <> [G(k), PROP(k + 1, i - 1)];
+    let CIN_TERM(i) = AND <> [cin, PROP(0, i - 1)];
+    let C(i) =
         if i == 0 then cin
-        else OR <> [G(i-1), AND <> [P(i-1), C(i-1)]];
+        else OR <> (
+            [GEN_TERM(k, i) | k in [0..i]] ++
+            [CIN_TERM(i)]
+        );
 
     for i in [0..n] {
-        sum[i] <> XOR <> [a[i], b[i], C(i)];
+        sum[i] <> XOR <> [P(i), C(i)];
     }
     carry <> C(n);
 }

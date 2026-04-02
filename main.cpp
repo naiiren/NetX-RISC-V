@@ -116,22 +116,18 @@ namespace nxon::impl {
         source_t a, b, alu_ctl;
         sink_t result, zero, less;
 
-        alu_rule(source_t a, source_t b, source_t alu_ctl, sink_t result, sink_t zero, sink_t less)
+        alu_rule(const source_t a, const source_t b, const source_t alu_ctl,
+                 const sink_t result, const sink_t zero, const sink_t less)
             : rule_impl(
                 a.dependencies() + b.dependencies() + alu_ctl.dependencies(),
                 result.outcomes() + zero.outcomes() + less.outcomes()
             ),
-            a(std::move(a)), 
-            b(std::move(b)), 
-            alu_ctl(std::move(alu_ctl)),
-            result(std::move(result)), 
-            zero(std::move(zero)), 
-            less(std::move(less)) {}
+            a(a), b(b), alu_ctl(alu_ctl), result(result), zero(zero), less(less) {}
 
-        indirect_id_set perform(value_storage &values) const override {
-            const auto a_val = *a.get(values);
-            const auto b_val = *b.get(values);
-            const auto ctl = static_cast<uint64_t>(*alu_ctl.get(values));
+        id_set perform(value_storage &values) const override {
+            const auto a_val = a.get(values);
+            const auto b_val = b.get(values);
+            const auto ctl = static_cast<uint64_t>(alu_ctl.get(values));
 
             value_t res;
             switch (ctl) {
@@ -155,21 +151,19 @@ namespace nxon::impl {
             }
 
             std::vector<id_t> changes;
-            if (result.check(values, res)) {
-                result.put(values, res);
+            if (result.update_if_changed(values, res)) {
                 changes.insert(changes.end(), result.outcomes().begin(), result.outcomes().end());
             }
 
-            if (const auto next_zero = value_t{1, ctl == 0b0010 || ctl == 0b1010 ? a_val == b_val : static_cast<uint64_t>(res) == 0}; zero.check(values, next_zero)) {
-                zero.put(values, next_zero);
+            if (const auto next_zero = value_t{1, ctl == 0b0010 || ctl == 0b1010 ? a_val == b_val : static_cast<uint64_t>(res) == 0};
+                zero.update_if_changed(values, next_zero)) {
                 changes.insert(changes.end(), zero.outcomes().begin(), zero.outcomes().end());
             }
 
-            if (const auto next_less = value_t{1, static_cast<uint64_t>(res)}; less.check(values, next_less)) {
-                less.put(values, next_less);
+            if (const auto next_less = value_t{1, static_cast<uint64_t>(res)}; less.update_if_changed(values, next_less)) {
                 changes.insert(changes.end(), less.outcomes().begin(), less.outcomes().end());
             }
-            return indirect_id_set(id_set{changes.begin(), changes.end()});
+            return id_set{changes.begin(), changes.end()};
         }
 
         static rule_t parse(const parse_context &ctx, const nlohmann::json &json) {
@@ -189,9 +183,6 @@ namespace nxon::impl {
 }
 
 int main(int argc, char *argv[]) {
-    int passed = 0, total = 0;
-    
-    // Parse arguments
     bool enable_native = true;
     bool enable_trace = false;
     std::vector<std::string> test_dirs;
@@ -217,150 +208,137 @@ int main(int argc, char *argv[]) {
     
     std::string json;
     std::getline(std::cin, json);
-    partitioned_parse_context ctx;
+    const auto native_rules = native_map{{"ALU", std::function(impl::alu_rule::parse)}};
+
+    auto run_suite = [&](auto &ctx) {
+        int passed = 0, total = 0;
+        using namespace std::chrono;
+        duration<double> total_simulation_seconds{0.0};
+
+        auto run_file = [&](const std::filesystem::path &input_path, int max_cycles = 100000) {
+            std::filesystem::path file_path = input_path;
+            if (!file_path.is_absolute()) {
+                file_path = std::filesystem::current_path() / file_path;
+            }
+
+            if (!std::filesystem::exists(file_path)) {
+                std::cerr << "Warning: test file not found: " << input_path << "\n";
+                return;
+            }
+            if (file_path.extension() != ".hex") {
+                std::cerr << "Warning: test file must be a .hex file: " << input_path << "\n";
+                return;
+            }
+
+            total++;
+            std::cout << "Running test case: " << file_path.filename();
+            const auto sim_start = high_resolution_clock::now();
+
+            const auto data_path = file_path.parent_path() / file_path.stem();
+            const auto instr_mem = new Memory(std::ifstream(file_path));
+            const auto data_mem  = new Memory(std::ifstream(data_path.string() + ".data"));
+
+            ctx.set("rst", value_t{1, 1});
+            ctx.flip("clk");
+            ctx.flip("clk");
+            ctx.set("rst", value_t{1, 0});
+
+            bool seen_magic = false;
+            bool finished = false;
+            int drain_cycles = 0;
+            for (int i = 0; i != max_cycles; ++i) {
+                const auto fetch_pc = ctx.get("imem_addr");
+                const auto instr = instr_mem->read_word(fetch_pc);
+
+                if (enable_trace) {
+                    std::cout << std::endl
+                              << "Cycle " << std::setw(5) << i << ": " << std::hex
+                              << "PC = 0x"          << std::setw(5) << std::setfill('0') << static_cast<unsigned>(fetch_pc) << ", "
+                              << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr) << ", "
+                              << std::dec;
+                }
+
+                ctx.set("instr", instr);
+
+                auto d_mem_op   = ctx.get("dmem_op");
+                auto d_mem_addr = ctx.get("dmem_addr");
+                if (ctx.get("dmem_wr") == high) {
+                    auto d_mem_in = ctx.get("dmem_in");
+                    data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
+                }
+
+                if (!seen_magic &&
+                    ctx.get("ifid.valid") == high &&
+                    ctx.get("ifid.instr") == magic_instr) {
+                    seen_magic = true;
+                    drain_cycles = 128;
+                }
+
+                if (seen_magic && drain_cycles == 0) {
+                    if (static_cast<unsigned>(ctx.get("x10")) == 0x00c0ffee) {
+                        std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
+                        passed++;
+                    } else {
+                        std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
+                    }
+                    finished = true;
+                    break;
+                }
+
+                if (seen_magic) {
+                    drain_cycles--;
+                }
+
+                ctx.set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
+                ctx.flip("clk");
+                ctx.flip("clk");
+            }
+
+            if (!finished) {
+                std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
+            }
+
+            delete instr_mem;
+            delete data_mem;
+            total_simulation_seconds += high_resolution_clock::now() - sim_start;
+        };
+
+        auto run_dir = [&](const std::string& dir_name, int max_cycles = 100000) {
+            std::filesystem::path dir = std::filesystem::current_path() / dir_name;
+            if (!std::filesystem::is_directory(dir)) {
+                std::cerr << "Warning: test directory not found: " << dir_name << "\n";
+                return;
+            }
+            std::cout << "\n=== Running tests from '" << dir_name << "' ===\n";
+
+            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                const std::filesystem::path file_path = entry.path();
+
+                if (file_path.extension() == ".data") continue;
+                if (file_path.extension() != ".hex")  continue;
+                if (file_path.filename() == "fence_i.hex") continue;
+
+                run_file(file_path, max_cycles);
+            }
+        };
+
+        for (const auto& d : test_dirs) {
+            run_dir(d);
+        }
+        for (const auto& f : test_files) {
+            run_file(f);
+        }
+
+        std::print("\nPassed {}/{} test cases\n", passed, total);
+        std::cout << "Elapsed time: " << total_simulation_seconds.count() << "s\n";
+        return passed == total ? 0 : 1;
+    };
+
+    parse_context ctx;
     if (enable_native) {
-        parse_circuit(ctx, json, {{"ALU", std::function(impl::alu_rule::parse)}});
+        parse_circuit(ctx, json, native_rules);
     } else {
         parse_circuit(ctx, json);
     }
-    ctx.init_partition();
-
-    using namespace std::chrono;
-    const auto start = high_resolution_clock::now();
-
-    auto hex32 = [](const value_t &v) {
-        std::ostringstream oss;
-        oss << "0x" << std::hex << std::setw(8) << std::setfill('0') << static_cast<unsigned>(v);
-        return oss.str();
-    };
-
-    auto run_file = [&](const std::filesystem::path &input_path, int max_cycles = 100000) {
-        std::filesystem::path file_path = input_path;
-        if (!file_path.is_absolute()) {
-            file_path = std::filesystem::current_path() / file_path;
-        }
-
-        if (!std::filesystem::exists(file_path)) {
-            std::cerr << "Warning: test file not found: " << input_path << "\n";
-            return;
-        }
-        if (file_path.extension() != ".hex") {
-            std::cerr << "Warning: test file must be a .hex file: " << input_path << "\n";
-            return;
-        }
-
-        total++;
-        std::cout << "Running test case: " << file_path.filename();
-
-        const auto data_path = file_path.parent_path() / file_path.stem();
-        const auto instr_mem = new Memory(std::ifstream(file_path));
-        const auto data_mem  = new Memory(std::ifstream(data_path.string() + ".data"));
-
-        ctx.stashed_set("rst", value_t{1, 1});
-        ctx.apply_stash();
-        ctx.stashed_flip("clk");
-        ctx.apply_stash();
-        ctx.stashed_flip("clk");
-        ctx.apply_stash();
-
-        ctx.stashed_set("rst", value_t{1, 0});
-        ctx.apply_stash();
-
-        bool seen_magic = false;
-        bool finished = false;
-        int drain_cycles = 0;
-        for (int i = 0; i != max_cycles; ++i) {
-            const auto fetch_pc = ctx.get("imem_addr");
-            const auto instr = instr_mem->read_word(fetch_pc);
-
-            if (enable_trace) {
-                std::cout << std::endl
-                          << "Cycle " << std::setw(5) << i << ": " << std::hex
-                          << "PC = 0x"          << std::setw(5) << std::setfill('0') << static_cast<unsigned>(fetch_pc) << ", "
-                          << "Instruction = 0x" << std::setw(8) << std::setfill('0') << static_cast<unsigned>(instr) << ", "
-                          << "x10 = 0x"         << std::setw(8) << std::setfill('0') << static_cast<unsigned>(ctx.get("x10"))
-                          << std::dec;
-            }
-
-            ctx.stashed_set("instr", instr);
-            ctx.apply_stash();
-
-            auto d_mem_op   = ctx.get("dmem_op");
-            auto d_mem_addr = ctx.get("dmem_addr");
-            if (ctx.get("dmem_wr") == high) {
-                auto d_mem_in = ctx.get("dmem_in");
-                data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
-            }
-
-            if (!seen_magic &&
-                ctx.get("ifid.valid") == high &&
-                ctx.get("ifid.instr") == magic_instr) {
-                seen_magic = true;
-                drain_cycles = 128;
-            }
-
-            if (seen_magic && drain_cycles == 0) {
-                if (static_cast<unsigned>(ctx.get("x10")) == 0x00c0ffee) {
-                    std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
-                    passed++;
-                } else {
-                    std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
-                }
-                finished = true;
-                break;
-            }
-
-            if (seen_magic) {
-                drain_cycles--;
-            }
-
-            ctx.stashed_set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
-            ctx.apply_stash();
-            ctx.stashed_flip("clk");
-            ctx.apply_stash();
-            ctx.stashed_flip("clk");
-            ctx.apply_stash();
-        }
-
-        if (!finished) {
-            std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
-        }
-
-        delete instr_mem;
-        delete data_mem;
-    };
-
-    // Run all .hex test cases found in a directory.
-    auto run_dir = [&](const std::string& dir_name, int max_cycles = 100000) {
-        std::filesystem::path dir = std::filesystem::current_path() / dir_name;
-        if (!std::filesystem::is_directory(dir)) {
-            std::cerr << "Warning: test directory not found: " << dir_name << "\n";
-            return;
-        }
-        std::cout << "\n=== Running tests from '" << dir_name << "' ===\n";
-
-        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-            const std::filesystem::path file_path = entry.path();
-
-            if (file_path.extension() == ".data") continue;
-            if (file_path.extension() != ".hex")  continue;
-            if (file_path.filename() == "fence_i.hex") continue;
-
-            run_file(file_path, max_cycles);
-        }
-    };
-
-    for (const auto& d : test_dirs) {
-        run_dir(d);
-    }
-    for (const auto& f : test_files) {
-        run_file(f);
-    }
-
-    std::print("\nPassed {}/{} test cases\n", passed, total);
-
-    const auto end = high_resolution_clock::now();
-    std::chrono::duration<double> elapsed_seconds = end - start;
-    std::cout << "Elapsed time: " << elapsed_seconds.count() << "s\n";
-    return 0;
+    return run_suite(ctx);
 }
