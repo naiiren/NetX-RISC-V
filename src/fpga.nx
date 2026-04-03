@@ -460,19 +460,16 @@ component BYTE_FIFO(capacity) : [clk, rst, push, din, pop, clr_overflow] -> [dou
 
     ready <> NE <> [count, UCAST(capacity + 1) <> 0];
     full <> EQ <> [count, UCAST(capacity + 1) <> DEPTH];
-
     rd_ptr <> reg(0) <> MUX(1) <> [
         pop_ok,
         rd_ptr,
         ADD <> [rd_ptr, UCAST(capacity) <> 1]
     ];
-
     wr_ptr <> reg(0) <> MUX(1) <> [
         push_ok,
         wr_ptr,
         ADD <> [wr_ptr, UCAST(capacity) <> 1]
     ];
-
     count <> reg(0) <> MUX(2) <> {
         sel : count_sel,
         case[2'b00] : count,
@@ -480,13 +477,11 @@ component BYTE_FIFO(capacity) : [clk, rst, push, din, pop, clr_overflow] -> [dou
         case[2'b10] : ADD <> [count, UCAST(capacity + 1) <> 1],
         case[2'b11] : count
     };
-
     overflow <> reg(1'b0) <> MUX(1) <> [
         clr_overflow,
         MUX(1) <> [AND <> [push, full], overflow, 1'b1],
         1'b0
     ];
-
     dout <> ram_rd_data;
 }
 

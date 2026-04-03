@@ -9,7 +9,7 @@ WORKLOAD_DIR="${REPO_DIR}/workloads"
 
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/reports/compare_$(date +%Y%m%d_%H%M%S)}"
 TEST_NAME="${1:-system}"
-ACTIVITY_CYCLES="${ACTIVITY_CYCLES:-100}"
+ACTIVITY_CYCLES="${ACTIVITY_CYCLES:-1000}"
 
 mkdir -p "${OUT_DIR}"
 

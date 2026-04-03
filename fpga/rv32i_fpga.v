@@ -10,7 +10,7 @@ module rv32i_fpga(
 	input 		          		CLOCK3_50,
 
 	//////////// LED //////////
-output		     [8:0]		LEDG,
+    output		     [8:0]		LEDG,
 	output		    [17:0]		LEDR,
 
 	//////////// KEY //////////
