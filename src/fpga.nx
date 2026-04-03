@@ -532,7 +532,6 @@ component VGA_DRIVER : [
     wire vga_r, vga_g, vga_b of bit(8);
     wire vga_blank_n, vga_clk, vga_hs, vga_sync_n, vga_vs of bit(1);
 
-    let reg(v_rst) = REG(pos_edge=true, high_rst=true, rst_value=v_rst) <> [clk#, rst#, TO];
     auto vga_status_sel <> AND(2) <> [
         core_addr[31],
         EQ <> [core_addr, 32'h80000100]
@@ -541,7 +540,8 @@ component VGA_DRIVER : [
 
     // The VGA timing state machine runs at the pixel clock, which is half the core clock.
     wire vga_clk of bit(1);
-    vga_clk <> reg(1'b0) <> NOT <> vga_clk;
+    vga_clk <> REGISTER(pos_edge=true) <> [clk, NOT <> vga_clk];
+    let pix_reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [vga_clk#, rst#, TO];
 
     wire h_state of VGA_H_STATE;
     wire v_state of VGA_V_STATE;
@@ -550,11 +550,10 @@ component VGA_DRIVER : [
 
     auto h_zero <> EQ <> [h_rem, 10'd0];
     auto v_zero <> EQ <> [v_rem, 10'd0];
-    auto h_wrap <> AND <> [vga_clk, h_zero, EQ <> [h_state, H_BACK]];
+    auto h_wrap <> AND <> [h_zero, EQ <> [h_state, H_BACK]];
 
-    h_state <> reg(H_VISIBLE) <> MUX(1) <> [
-        AND <> [vga_clk, h_zero],
-        h_state,
+    h_state <> pix_reg(H_VISIBLE) <> MUX(1) <> [
+        h_zero, h_state,
         MUX(2) <> {
             sel : h_state,
             case[H_VISIBLE] : H_FRONT,
@@ -564,25 +563,20 @@ component VGA_DRIVER : [
         }
     ];
 
-    h_rem <> reg(10'd639) <> MUX(1) <> [
-        vga_clk,
-        h_rem,
-        MUX(1) <> [
-            h_zero, 
-            SUB <> [h_rem, 10'd1], // Count down the horizontal pixel position
-            MUX(2) <> {            // Reload the horizontal pixel counter based on the current state
-                sel : h_state,
-                case[H_VISIBLE] : 10'd15,
-                case[H_FRONT]   : 10'd95,
-                case[H_SYNC]    : 10'd47,
-                case[H_BACK]    : 10'd639
-            }
-        ]
+    h_rem <> pix_reg(10'd639) <> MUX(1) <> [
+        h_zero,
+        SUB <> [h_rem, 10'd1], // Count down the horizontal pixel position
+        MUX(2) <> {            // Reload the horizontal pixel counter based on the current state
+            sel : h_state,
+            case[H_VISIBLE] : 10'd15,
+            case[H_FRONT]   : 10'd95,
+            case[H_SYNC]    : 10'd47,
+            case[H_BACK]    : 10'd639
+        }
     ];
 
-    v_state <> reg(V_VISIBLE) <> MUX(1) <> [
-        AND <> [h_wrap, v_zero],
-        v_state,
+    v_state <> pix_reg(V_VISIBLE) <> MUX(1) <> [
+        AND <> [h_wrap, v_zero], v_state,
         MUX(2) <> {
             sel : v_state,
             case[V_VISIBLE] : V_FRONT,
@@ -592,9 +586,8 @@ component VGA_DRIVER : [
         }
     ];
 
-    v_rem <> reg(10'd479) <> MUX(1) <> [
-        h_wrap,
-        v_rem,
+    v_rem <> pix_reg(10'd479) <> MUX(1) <> [
+        h_wrap, v_rem,
         MUX(1) <> [
             v_zero, 
             SUB <> [v_rem, 10'd1], // Count down the vertical pixel position
@@ -612,18 +605,13 @@ component VGA_DRIVER : [
     auto v_visible <> EQ <> [v_state, V_VISIBLE];
     auto active_video <> AND <> [h_visible, v_visible];
 
-    x_pos <> reg(10'd0) <> MUX(1) <> [
-        vga_clk,
-        x_pos,
-        MUX(1) <> [
-            h_visible, 10'd0,
-            MUX(1) <> [h_zero, ADD <> [x_pos, 10'd1], 10'd0]
-        ]
+    x_pos <> pix_reg(10'd0) <> MUX(1) <> [
+        h_visible, 10'd0,
+        MUX(1) <> [h_zero, ADD <> [x_pos, 10'd1], 10'd0]
     ];
 
-    y_pos <> reg(10'd0) <> MUX(1) <> [
-        h_wrap,
-        y_pos,
+    y_pos <> pix_reg(10'd0) <> MUX(1) <> [
+        h_wrap, y_pos,
         MUX(1) <> [
             v_visible, 10'd0,
             MUX(1) <> [v_zero, ADD <> [y_pos, 10'd1], 10'd0]
@@ -656,23 +644,11 @@ component VGA_DRIVER : [
     wire glyph_row_q of bit(4);
     wire active_video_q, text_active_q of bit(1);
 
-    scan_char_q    <> reg(8'h20) <> MUX(1) <> [
-        vga_clk,
-        scan_char_q,
-        MUX(1) <> [text_active, 8'h20, scan_char]
-    ];
-    glyph_col_q    <> reg(3'b000) <> MUX(1) <> [
-        vga_clk,
-        glyph_col_q,
-        MUX(1) <> [text_active, 3'b000, glyph_col]
-    ];
-    glyph_row_q    <> reg(4'b0000) <> MUX(1) <> [
-        vga_clk,
-        glyph_row_q,
-        MUX(1) <> [text_active, 4'b0000, glyph_row_sel]
-    ];
-    active_video_q <> reg(1'b0) <> MUX(1) <> [vga_clk, active_video_q, active_video];
-    text_active_q  <> reg(1'b0) <> MUX(1) <> [vga_clk, text_active_q, text_active];
+    scan_char_q    <> pix_reg(8'h20)   <> MUX(1) <> [text_active, 8'h20, scan_char];
+    glyph_col_q    <> pix_reg(3'b000)  <> MUX(1) <> [text_active, 3'b000, glyph_col];
+    glyph_row_q    <> pix_reg(4'b0000) <> MUX(1) <> [text_active, 4'b0000, glyph_row_sel];
+    active_video_q <> pix_reg(1'b0)    <> active_video;
+    text_active_q  <> pix_reg(1'b0)    <> text_active;
 
     auto glyph_row_bits <> VGA_GLYPH_ROW <> [scan_char_q, glyph_row_q];
     auto glyph_bit <> MUX(3) <> [glyph_col_q] ++ [glyph_row_bits[7 - i] | i in [0..8]];

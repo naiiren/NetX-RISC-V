@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_tests.sh – compile custom test programs for the NetX RV32I harness.
 #
-# Produces build artifacts in scripts/ and copies runtime images
+# Produces temporary build artifacts in scripts/ and copies runtime images
 #   <name>.hex  (instruction memory image)
 #   <name>.data (data memory image)
 # into custom_cases/ so `rv32i_test --dir custom_cases` can run them.
@@ -10,7 +10,7 @@
 #   cd <repo_root>
 #   bash scripts/build_tests.sh
 #   bash scripts/build_tests.sh gcd
-#   bash scripts/build_tests.sh scripts/gcd.c
+#   bash scripts/build_tests.sh workloads/gcd.c
 #
 # Requirements:
 #   clang (with riscv32-unknown-elf target support)
@@ -21,6 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORKLOAD_DIR="${REPO_DIR}/workloads"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/custom_cases}"
 
 CLANG="${CLANG:-clang}"
@@ -38,7 +39,7 @@ CFLAGS=(
     -nostartfiles
     -fno-stack-protector
     -fno-exceptions
-    -T "${SCRIPT_DIR}/link.ld"
+    -T "${WORKLOAD_DIR}/link.ld"
     -Wl,--no-check-sections
 )
 
@@ -72,7 +73,11 @@ resolve_test_source() {
             printf '%s\n' "${REPO_DIR}/${arg}"
         fi
     else
-        printf '%s\n' "${SCRIPT_DIR}/${arg}.c"
+        if [[ -f "${WORKLOAD_DIR}/${arg}.c" ]]; then
+            printf '%s\n' "${WORKLOAD_DIR}/${arg}.c"
+        else
+            printf '%s\n' "${SCRIPT_DIR}/${arg}.c"
+        fi
     fi
 }
 
@@ -154,7 +159,7 @@ for arg in "${TEST_ARGS[@]}"; do
 
     echo "Generated ${name}.elf, ${name}.bin, ${name}.hex, ${name}.data"
     build_test "${name}" \
-        "${SCRIPT_DIR}/start.s" \
+        "${WORKLOAD_DIR}/start.s" \
         "${source_file}"
     BUILT_NAMES+=("${name}")
 done

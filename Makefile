@@ -40,17 +40,17 @@ fpga:
 
 fpga-lcd:
 	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/lcd.c
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/lcd.c
 	bash ./scripts/fpga_flow.sh lcd lcd
 
 fpga-vga:
 	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/vga.c
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/vga.c
 	bash ./scripts/fpga_flow.sh lcd vga
 
 fpga-system:
 	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/system.c
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/system.c
 	bash ./scripts/fpga_flow.sh lcd system
 
 fpga-verilog:
@@ -59,7 +59,7 @@ fpga-verilog:
 
 fpga-verilog-system:
 	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh scripts/system.c
+	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/system.c
 	CASE_DIR=$(CURDIR)/fpga_cases bash ./scripts/fpga_flow_verilog.sh system
 
 clean:

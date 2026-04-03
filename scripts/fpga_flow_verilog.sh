@@ -18,6 +18,7 @@ REVISION="${REVISION:-rv32i_fpga}"
 CABLE="${CABLE:-1}"
 MODE="${MODE:-jtag}"
 CASE_DIR="${CASE_DIR:-${REPO_DIR}/custom_cases}"
+PROGRAM_DEVICE="${PROGRAM_DEVICE:-1}"
 
 if [[ $# -ne 1 ]]; then
     echo "Usage: $0 <test-name>"
@@ -167,7 +168,11 @@ echo "[3/3] Running Quartus compile and programming board"
     fi
 )
 
-"${QUARTUS_PGM}" -m "${MODE}" -c "${CABLE}" -o "p;${FPGA_DIR}/${PROJECT}.sof"
+if [[ "${PROGRAM_DEVICE}" == "1" ]]; then
+    "${QUARTUS_PGM}" -m "${MODE}" -c "${CABLE}" -o "p;${FPGA_DIR}/${PROJECT}.sof"
+else
+    echo "  -> Skipping board programming (PROGRAM_DEVICE=${PROGRAM_DEVICE})"
+fi
 
 echo
 echo "Done."

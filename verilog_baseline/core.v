@@ -850,7 +850,7 @@ endmodule
   * It takes two 32-bit inputs (a and b) and a carry-in (cin) to produce a 32-bit sum, a carry-out, a zero flag, and an overflow flag.
   * The zero flag indicates if the result of the addition is zero, while the overflow flag indicates if there was an overflow during the addition.
   *
-  * The adder is composed of four 8-bit carry-lookahead adders (CLA) that are chained together to handle the 32-bit addition.
+ * The adder is composed of eight 4-bit carry-lookahead adders (CLA) that are chained together to handle the 32-bit addition.
   *
   * @port a         Left addend
   * @port b         Right addend
@@ -869,38 +869,62 @@ module ADDER32(
   output        zero,
   output        overflow
 );
-wire c1, c2, c3;
-wire c0_to_7;
-wire c8_to_15;
-wire c16_to_23;
-wire c24_to_31;
+wire c1, c2, c3, c4, c5, c6, c7;
 
-CLA8 cla0(
-  .a(a[7:0]),
-  .b(b[7:0]),
+CLA4 cla0(
+  .a(a[3:0]),
+  .b(b[3:0]),
   .cin(cin),
-  .sum(sum[7:0]),
+  .sum(sum[3:0]),
   .carry(c1)
 );
-CLA8 cla1(
-  .a(a[15:8]),
-  .b(b[15:8]),
+CLA4 cla1(
+  .a(a[7:4]),
+  .b(b[7:4]),
   .cin(c1),
-  .sum(sum[15:8]),
+  .sum(sum[7:4]),
   .carry(c2)
 );
-CLA8 cla2(
-  .a(a[23:16]),
-  .b(b[23:16]),
+CLA4 cla2(
+  .a(a[11:8]),
+  .b(b[11:8]),
   .cin(c2),
-  .sum(sum[23:16]),
+  .sum(sum[11:8]),
   .carry(c3)
 );
-CLA8 cla3(
-  .a(a[31:24]),
-  .b(b[31:24]),
+CLA4 cla3(
+  .a(a[15:12]),
+  .b(b[15:12]),
   .cin(c3),
-  .sum(sum[31:24]),
+  .sum(sum[15:12]),
+  .carry(c4)
+);
+CLA4 cla4(
+  .a(a[19:16]),
+  .b(b[19:16]),
+  .cin(c4),
+  .sum(sum[19:16]),
+  .carry(c5)
+);
+CLA4 cla5(
+  .a(a[23:20]),
+  .b(b[23:20]),
+  .cin(c5),
+  .sum(sum[23:20]),
+  .carry(c6)
+);
+CLA4 cla6(
+  .a(a[27:24]),
+  .b(b[27:24]),
+  .cin(c6),
+  .sum(sum[27:24]),
+  .carry(c7)
+);
+CLA4 cla7(
+  .a(a[31:28]),
+  .b(b[31:28]),
+  .cin(c7),
+  .sum(sum[31:28]),
   .carry(carry)
 );
 
@@ -911,47 +935,42 @@ endmodule
 /**
   * Carry-Lookahead Adder Component
   *
-  * This component implements a n-bit adder using a carry-lookahead approach for efficient addition.
-  * It takes two n-bit inputs (a and b) and a carry-in (cin) to produce a n-bit sum and a carry-out.
+ * This component implements a 4-bit carry-lookahead adder.
+ * It takes two 4-bit inputs (a and b) and a carry-in (cin) to produce a 4-bit sum and a carry-out.
   *
   * @port a      Left addend slice
   * @port b      Right addend slice
   * @port cin    Carry input
-  * @port sum    8-bit sum slice
-  * @port carry  Carry output
-  */
-module CLA8(
-  input  [7:0] a,
-  input  [7:0] b,
+ * @port sum    4-bit sum slice
+ * @port carry  Carry output
+ */
+module CLA4(
+  input  [3:0] a,
+  input  [3:0] b,
   input        cin,
-  output [7:0] sum,
+  output [3:0] sum,
   output       carry
 );
-wire [7:0] p;
-wire [7:0] g;
-wire [8:0] c;
+wire [3:0] p;
+wire [3:0] g;
+wire [4:0] c;
 
 assign p = a | b;
 assign g = a & b;
 assign c[0] = cin;
 assign c[1] = g[0] | (p[0] & c[0]);
-assign c[2] = g[1] | (p[1] & c[1]);
-assign c[3] = g[2] | (p[2] & c[2]);
-assign c[4] = g[3] | (p[3] & c[3]);
-assign c[5] = g[4] | (p[4] & c[4]);
-assign c[6] = g[5] | (p[5] & c[5]);
-assign c[7] = g[6] | (p[6] & c[6]);
-assign c[8] = g[7] | (p[7] & c[7]);
+assign c[2] = g[1] | (p[1] & g[0]) | (p[1] & p[0] & c[0]);
+assign c[3] = g[2] | (p[2] & g[1]) | (p[2] & p[1] & g[0]) |
+              (p[2] & p[1] & p[0] & c[0]);
+assign c[4] = g[3] | (p[3] & g[2]) | (p[3] & p[2] & g[1]) |
+              (p[3] & p[2] & p[1] & g[0]) |
+              (p[3] & p[2] & p[1] & p[0] & c[0]);
 
 assign sum[0] = a[0] ^ b[0] ^ c[0];
 assign sum[1] = a[1] ^ b[1] ^ c[1];
 assign sum[2] = a[2] ^ b[2] ^ c[2];
 assign sum[3] = a[3] ^ b[3] ^ c[3];
-assign sum[4] = a[4] ^ b[4] ^ c[4];
-assign sum[5] = a[5] ^ b[5] ^ c[5];
-assign sum[6] = a[6] ^ b[6] ^ c[6];
-assign sum[7] = a[7] ^ b[7] ^ c[7];
-assign carry = c[8];
+assign carry = c[4];
 endmodule
 
 /**
