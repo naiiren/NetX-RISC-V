@@ -121,7 +121,10 @@ component LCD_DRIVER : [
     auto text_ram_wr_data <> MUX(1) <> [lcd_clear_req, core_wdata[7:0], 8'h20];
 
     // LCD text RAM: 32 bytes for a 16x2 display, initialized to spaces (8'h20).
-    auto [cpu_lcd_byte, scan_lcd_byte] <> BYTE_RAM(capacity=5, rst_value=8'h20) <> {
+    auto [cpu_lcd_byte, scan_lcd_byte] <> REG_FILE (
+        width=8, capacity=5, expose=false, zero_immutable=false,
+        pos_edge=true, high_rst=true, rst_value=8'h20
+    ) <> {
         clk       : clk,
         rst       : rst,
         rd_addr_a : core_addr[4:0],
@@ -326,28 +329,6 @@ component PS2_KEYBOARD_DRIVER : [
     };
 }
 
-component BYTE_RAM(capacity, rst_value) : [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> [dout_a, dout_b] {
-    wire clk of clock();
-    wire rst, wr_en of bit(1);
-    wire rd_addr_a, rd_addr_b, wr_addr of bit(capacity);
-    wire din, dout_a, dout_b of bit(8);
-
-    let W = 2**capacity;
-    wire data[W] of bit(8);
-    wire wr_mask of bit(W);
-    wr_mask <> DECODER(capacity) <> wr_addr;
-
-    for i in [0..W] {
-        data[i] <> REG(pos_edge=true, high_rst=true, rst_value=rst_value) <> [
-            clk, rst,
-            MUX(1) <> [AND <> [wr_mask[i], wr_en], data[i], din]
-        ];
-    }
-
-    dout_a <> MUX(capacity) <> [rd_addr_a] ++ [data[i] | i in [0..W]];
-    dout_b <> MUX(capacity) <> [rd_addr_b] ++ [data[i] | i in [0..W]];
-}
-
 /**
   * PS/2 Keyboard Receiver
   * This component samples the PS/2 clock/data pair, assembles 11-bit PS/2
@@ -448,7 +429,10 @@ component BYTE_FIFO(capacity) : [clk, rst, push, din, pop, clr_overflow] -> [dou
     auto pop_ok <> AND <> [pop, ready];
     auto count_sel <> CONCAT <> [push_ok, pop_ok];
 
-    auto [ram_rd_data, _fifo_unused] <> BYTE_RAM(capacity=capacity, rst_value=8'h00) <> {
+    auto [ram_rd_data, _fifo_unused] <> REG_FILE (
+        width=8, capacity=capacity, expose=false, zero_immutable=false,
+        pos_edge=true, high_rst=true, rst_value=8'h00
+    ) <> {
         clk       : clk,
         rst       : rst,
         rd_addr_a : rd_ptr,
@@ -461,14 +445,10 @@ component BYTE_FIFO(capacity) : [clk, rst, push, din, pop, clr_overflow] -> [dou
     ready <> NE <> [count, UCAST(capacity + 1) <> 0];
     full <> EQ <> [count, UCAST(capacity + 1) <> DEPTH];
     rd_ptr <> reg(0) <> MUX(1) <> [
-        pop_ok,
-        rd_ptr,
-        ADD <> [rd_ptr, UCAST(capacity) <> 1]
+        pop_ok, rd_ptr, ADD <> [rd_ptr, UCAST(capacity) <> 1]
     ];
     wr_ptr <> reg(0) <> MUX(1) <> [
-        push_ok,
-        wr_ptr,
-        ADD <> [wr_ptr, UCAST(capacity) <> 1]
+        push_ok, wr_ptr, ADD <> [wr_ptr, UCAST(capacity) <> 1]
     ];
     count <> reg(0) <> MUX(2) <> {
         sel : count_sel,

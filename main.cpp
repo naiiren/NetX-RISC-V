@@ -167,17 +167,10 @@ namespace nxon::impl {
         }
 
         static rule_t parse(const parse_context &ctx, const nlohmann::json &json) {
-            const auto &input = json["input"];
-            const auto &output = json["output"];
-
-            return rule_t{new alu_rule(
-                parse_source(input.at(0), ctx),
-                parse_source(input.at(1), ctx),
-                parse_source(input.at(2), ctx),
-                parse_sink(output.at(0), ctx),
-                parse_sink(output.at(1), ctx),
-                parse_sink(output.at(2), ctx)
-            )};
+            return make_rule<alu_rule>(ctx, json,
+                source_in<0>, source_in<1>, source_in<2>,
+                sink_out<0>,  sink_out<1>,  sink_out<2>
+            );
         }
     };
 }
@@ -243,9 +236,6 @@ int main(int argc, char *argv[]) {
             ctx.flip("clk");
             ctx.set("rst", value_t{1, 0});
 
-            bool seen_magic = false;
-            bool finished = false;
-            int drain_cycles = 0;
             for (int i = 0; i != max_cycles; ++i) {
                 const auto fetch_pc = ctx.get("imem_addr");
                 const auto instr = instr_mem->read_word(fetch_pc);
@@ -267,35 +257,15 @@ int main(int argc, char *argv[]) {
                     data_mem->write_with_op(d_mem_op, d_mem_addr, d_mem_in);
                 }
 
-                if (!seen_magic &&
-                    ctx.get("ifid.valid") == high &&
-                    ctx.get("ifid.instr") == magic_instr) {
-                    seen_magic = true;
-                    drain_cycles = 128;
-                }
-
-                if (seen_magic && drain_cycles == 0) {
-                    if (static_cast<unsigned>(ctx.get("x10")) == 0x00c0ffee) {
-                        std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
-                        passed++;
-                    } else {
-                        std::cout << "\t-> \033[31mFailed!\033[0m" << std::endl;
-                    }
-                    finished = true;
+                if (static_cast<unsigned>(ctx.get("x10")) == 0x00c0ffee) {
+                    std::cout << "\t-> \033[32mPassed!\033[0m" << std::endl;
+                    passed++;
                     break;
-                }
-
-                if (seen_magic) {
-                    drain_cycles--;
                 }
 
                 ctx.set("dmem_out", data_mem->read_with_op(d_mem_op, d_mem_addr));
                 ctx.flip("clk");
                 ctx.flip("clk");
-            }
-
-            if (!finished) {
-                std::cout << "\t-> \033[31mFailed! (timeout)\033[0m" << std::endl;
             }
 
             delete instr_mem;

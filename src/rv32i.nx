@@ -94,10 +94,9 @@ component CORE : [clk, rst, instr, dmem_out] -> [
     auto exmem_fwd_data <> exmem.result;
 
     auto [id_ra, id_rb, x10] <> REG_FILE (
-        width=32,
-        capacity=5,
-        pos_edge=true,
-        high_rst=true
+        width=32, capacity=5,
+        expose=true, zero_immutable=true,
+        pos_edge=true, high_rst=true, rst_value=32'h0
     ) <> {
         clk       : clk,
         rst       : rst,
@@ -572,10 +571,13 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
   * It supports two asynchronous read ports and one synchronous write port.
   * Register x0 is hardwired to zero and ignores writes.
   *
-  * @param width       The bit-width of each register (e.g., 32 for RV32I).
-  * @param capacity    The number of address bits for the register file (e.g., 5 for 32 registers).
-  * @param pos_edge    Whether the write occurs on the positive clock edge (true) or negative edge (false).
-  * @param high_rst    Whether the reset is active-high (true) or active-low (false).
+  * @param width          The bit-width of each register (e.g., 32 for RV32I).
+  * @param capacity       The number of address bits for the register file (e.g., 5 for 32 registers).
+  * @param pos_edge       Whether the write occurs on the positive clock edge (true) or negative edge (false).
+  * @param high_rst       Whether the reset is active-high (true) or active-low (false).
+  * @param rst_value      The value to which registers are initialized on reset.
+  * @param expose         Whether to expose the internal register values as outputs.
+  * @param zero_immutable Whether register 0 is immutable zero (true) or a normal register (false).
   *
   * @port clk        Clock signal for synchronizing writes.
   * @port rst        Reset signal to initialize registers to zero.
@@ -589,8 +591,9 @@ component IMM_SELECTOR: [ext_op, instr] -> [imm] {
   * @port dout_b     Data output from read port B.
   * @port data[10]   The internal x10 register value for observation
   */
-component REG_FILE(width, capacity, pos_edge, high_rst) : 
-    [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> [dout_a, dout_b, data[10]] {
+component REG_FILE(width, capacity, pos_edge, high_rst, rst_value, expose, zero_immutable) : 
+    [clk, rst, rd_addr_a, rd_addr_b, wr_en, wr_addr, din] -> 
+    [dout_a, dout_b] ++ (if expose then [data[10]] else []) {
     wire clk of clock();
     wire rst, wr_en of bit(1);
     wire rd_addr_a, rd_addr_b, wr_addr of bit(capacity);
@@ -601,14 +604,15 @@ component REG_FILE(width, capacity, pos_edge, high_rst) :
 
     wire wr_mask of bit(W);
     wr_mask <> DECODER(capacity) <> wr_addr;
-    for i in [1..W] {
-        data[i] <> REG(pos_edge, high_rst, 0) <> [clk, rst,
+    let start = if zero_immutable then 1 else 0;
+    for i in [start..W] {
+        data[i] <> REG(pos_edge, high_rst, rst_value) <> [clk, rst,
             MUX(1) <> [
                 AND <> [wr_mask[i], wr_en], data[i], din
             ]
         ];
     }
-    data[0] <> 32'd0;
+    if zero_immutable then data[0] <> 32'd0;
     dout_a <> MUX(capacity) <> [rd_addr_a] ++ [data[i] | i in [0..W]];
     dout_b <> MUX(capacity) <> [rd_addr_b] ++ [data[i] | i in [0..W]];
 }

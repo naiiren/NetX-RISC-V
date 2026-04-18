@@ -360,8 +360,10 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to VGA_B[7]
 
 # BEGIN_ACTIVE_SOURCES
 set_global_assignment -name VERILOG_FILE rv32i_fpga.v
-set_global_assignment -name VERILOG_FILE core.v
-set_global_assignment -name VERILOG_FILE verilog_periph.v
+set_global_assignment -name VERILOG_FILE top.v
+set_global_assignment -name VERILOG_FILE io_periph.v
+set_global_assignment -name VERILOG_FILE kbd_periph.v
+set_global_assignment -name VERILOG_FILE vga_periph.v
 # END_ACTIVE_SOURCES
 set_global_assignment -name QIP_FILE ram_a.qip
 set_global_assignment -name QIP_FILE ram_b.qip

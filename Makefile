@@ -38,20 +38,10 @@ fpga:
 	bash ./scripts/build_tests.sh $(TEST)
 	bash ./scripts/fpga_flow.sh core $(TEST)
 
-fpga-lcd:
-	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/lcd.c
-	bash ./scripts/fpga_flow.sh lcd lcd
-
-fpga-vga:
-	mkdir -p fpga_cases
-	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/vga.c
-	bash ./scripts/fpga_flow.sh lcd vga
-
 fpga-system:
 	mkdir -p fpga_cases
 	OUT_DIR=$(CURDIR)/fpga_cases bash ./scripts/build_tests.sh workloads/system.c
-	bash ./scripts/fpga_flow.sh lcd system
+	bash ./scripts/fpga_flow.sh system system
 
 fpga-verilog:
 	bash ./scripts/build_tests.sh $(TEST)

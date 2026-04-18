@@ -32,7 +32,7 @@ else
     TEST_NAME="$2"
 fi
 
-if [[ "${FLOW_MODE}" != "core" && "${FLOW_MODE}" != "lcd" ]]; then
+if [[ "${FLOW_MODE}" != "core" && "${FLOW_MODE}" != "system" ]]; then
     echo "Invalid mode: ${FLOW_MODE}"
     echo "Expected one of: core, lcd"
     exit 1
@@ -100,7 +100,7 @@ set_active_sources() {
 }
 
 CASE_DIR="${REPO_DIR}/custom_cases"
-if [[ "${FLOW_MODE}" == "lcd" ]]; then
+if [[ "${FLOW_MODE}" == "system" ]]; then
     CASE_DIR="${REPO_DIR}/fpga_cases"
 fi
 
@@ -137,7 +137,7 @@ if write_if_changed "${TMP_OUT1}" "${FPGA_DIR}/top.v"; then
     NEED_FULL_COMPILE=1
 fi
 
-if [[ "${FLOW_MODE}" == "lcd" ]]; then
+if [[ "${FLOW_MODE}" == "system" ]]; then
     "${NX}" dump verilog "${REPO_DIR}/_netx.toml" --top "LCD_DRIVER" -o "${TMP_OUT2}"
     if write_if_changed "${TMP_OUT2}" "${FPGA_DIR}/io_periph.v"; then
         NEED_FULL_COMPILE=1
