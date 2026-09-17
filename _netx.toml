@@ -4,4 +4,4 @@ version = "0.1.0"
 include = [ "src/" ]
 
 [dependencies]
-std = { version = "0.1.0", git = "git@github.com:pascal-lab/NetX-std.git" }
+std = { version = "0.1.0", path = "../std" }

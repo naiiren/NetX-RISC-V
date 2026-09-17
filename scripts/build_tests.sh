@@ -14,6 +14,7 @@
 #
 # Requirements:
 #   clang (with riscv32-unknown-elf target support)
+#   lld
 #   llvm-objcopy
 #   python3
 
@@ -25,8 +26,9 @@ WORKLOAD_DIR="${REPO_DIR}/workloads"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/custom_cases}"
 
 CLANG="${CLANG:-clang}"
-OBJCOPY="${OBJCOPY:-llvm-objcopy-20}"
-OBJDUMP="${OBJDUMP:-llvm-objdump-20}"
+CLANG_LINKER="${CLANG_LINKER:-lld}"
+OBJCOPY="${OBJCOPY:-llvm-objcopy}"
+OBJDUMP="${OBJDUMP:-llvm-objdump}"
 PYTHON="${PYTHON:-python3}"
 
 # Common clang flags for bare-metal RV32I
@@ -40,6 +42,7 @@ CFLAGS=(
     -fno-stack-protector
     -fno-exceptions
     -T "${WORKLOAD_DIR}/link.ld"
+    "-fuse-ld=${CLANG_LINKER}"
     -Wl,--no-check-sections
 )
 

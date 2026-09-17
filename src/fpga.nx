@@ -514,9 +514,9 @@ component VGA_DRIVER : [
     mmio_hit <> vga_status_sel;
 
     // The VGA timing state machine runs at the pixel clock, which is half the core clock.
-    wire vga_clk of bit(1);
     vga_clk <> REGISTER(pos_edge=true) <> [clk, NOT <> vga_clk];
-    let pix_reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [vga_clk#, rst#, TO];
+    auto pix_clk <> AS_CLK <> vga_clk;
+    let pix_reg(v_rst) = REG(pos_edge=false, high_rst=true, rst_value=v_rst) <> [pix_clk#, rst#, TO];
 
     wire h_state of VGA_H_STATE;
     wire v_state of VGA_V_STATE;
